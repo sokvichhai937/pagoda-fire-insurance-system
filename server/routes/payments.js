@@ -4,7 +4,8 @@
 const express = require('express');
 const router = express.Router();
 const { body, param, query, validationResult } = require('express-validator');
-const db = require('../database/db');
+const Payment = require('../models/Payment');
+const Insurance = require('../models/Insurance');
 const { authenticate, isAdminOrStaff } = require('../middleware/auth');
 const pdfGenerator = require('../utils/pdfGenerator');
 
@@ -42,50 +43,19 @@ router.get('/',
       const offset = (page - 1) * limit;
       const { policyId, paymentMethod, startDate, endDate } = req.query;
 
-      // Build WHERE clause
-      const conditions = [];
-      const params = [];
+      // Build filters for model
+      const filters = {};
+      if (policyId) filters.policy_id = policyId;
+      if (paymentMethod) filters.payment_method = paymentMethod;
+      if (startDate) filters.start_date = startDate;
+      if (endDate) filters.end_date = endDate;
 
-      if (policyId) {
-        conditions.push('pm.policy_id = ?');
-        params.push(policyId);
-      }
-      if (paymentMethod) {
-        conditions.push('pm.payment_method = ?');
-        params.push(paymentMethod);
-      }
-      if (startDate) {
-        conditions.push('pm.payment_date >= ?');
-        params.push(startDate);
-      }
-      if (endDate) {
-        conditions.push('pm.payment_date <= ?');
-        params.push(endDate);
-      }
-
-      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-      // Get total count
-      const countResult = await db.get(`
-        SELECT COUNT(*) as total 
-        FROM payments pm
-        ${whereClause}
-      `, params);
-
-      // Get payments
-      const payments = await db.all(`
-        SELECT 
-          pm.*,
-          ip.policy_number,
-          p.name_en as pagoda_name,
-          p.name_km as pagoda_name_khmer
-        FROM payments pm
-        JOIN insurance_policies ip ON pm.policy_id = ip.id
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        ${whereClause}
-        ORDER BY pm.payment_date DESC
-        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-      `, [...params, offset, limit]);
+      // Get payments with pagination
+      const payments = await Payment.findAll(filters, { limit, offset });
+      
+      // Get total count (reuse findAll without pagination)
+      const allPayments = await Payment.findAll(filters);
+      const total = allPayments.length;
 
       res.json({
         success: true,
@@ -93,10 +63,10 @@ router.get('/',
         data: {
           payments,
           pagination: {
-            total: countResult.total,
+            total,
             page,
             limit,
-            totalPages: Math.ceil(countResult.total / limit)
+            totalPages: Math.ceil(total / limit)
           }
         }
       });
@@ -121,22 +91,7 @@ router.get('/:id',
     try {
       const { id } = req.params;
 
-      const payment = await db.get(`
-        SELECT 
-          pm.*,
-          ip.policy_number,
-          ip.premium_amount,
-          p.name_en as pagoda_name,
-          p.name_km as pagoda_name_khmer,
-          p.province,
-          p.district,
-          p.village,
-          p.commune
-        FROM payments pm
-        JOIN insurance_policies ip ON pm.policy_id = ip.id
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE pm.id = ?
-      `, [id]);
+      const payment = await Payment.findById(id);
 
       if (!payment) {
         return res.status(404).json({
@@ -179,8 +134,8 @@ router.post('/',
     try {
       const { policyId, amount, paymentDate, paymentMethod, referenceNumber, notes } = req.body;
 
-      // Verify policy exists
-      const policy = await db.get('SELECT * FROM insurance_policies WHERE id = ?', [policyId]);
+      // Verify policy exists (map camelCase to snake_case)
+      const policy = await Insurance.findById(policyId);
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -190,25 +145,22 @@ router.post('/',
 
       // Generate receipt number
       // បង្កើតលេខបង្កាន់ដៃ
-      const year = new Date(paymentDate).getFullYear();
-      const count = await db.get(
-        'SELECT COUNT(*) as count FROM payments WHERE YEAR(payment_date) = ?',
-        [year]
-      );
-      const receiptNumber = `RCP-${year}-${String(count.count + 1).padStart(5, '0')}`;
+      const receiptNumber = await Payment.generateReceiptNumber();
 
-      const result = await db.run(`
-        INSERT INTO payments (
-          policy_id, amount, payment_date, payment_method,
-          reference_number, receipt_number, notes,
-          processed_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        policyId, amount, paymentDate, paymentMethod,
-        referenceNumber, receiptNumber, notes, req.user.id
-      ]);
+      // Map camelCase to snake_case for model
+      const paymentData = {
+        policy_id: policyId,
+        amount,
+        payment_date: paymentDate,
+        payment_method: paymentMethod,
+        reference_number: referenceNumber,
+        receipt_number: receiptNumber,
+        notes,
+        processed_by: req.user.id
+      };
 
-      const payment = await db.get('SELECT * FROM payments WHERE id = ?', [result.lastID]);
+      const paymentId = await Payment.create(paymentData);
+      const payment = await Payment.findById(paymentId);
 
       res.status(201).json({
         success: true,
@@ -236,26 +188,7 @@ router.get('/:id/receipt',
     try {
       const { id } = req.params;
 
-      const payment = await db.get(`
-        SELECT 
-          pm.*,
-          ip.policy_number,
-          ip.premium_amount,
-          ip.coverage_start,
-          ip.coverage_end,
-          p.name_en as pagoda_name,
-          p.name_km as pagoda_name_khmer,
-          p.province,
-          p.district,
-          p.commune,
-          p.village,
-          u.full_name as recorded_by_name
-        FROM payments pm
-        JOIN insurance_policies ip ON pm.policy_id = ip.id
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        LEFT JOIN users u ON pm.processed_by = u.id
-        WHERE pm.id = ?
-      `, [id]);
+      const payment = await Payment.findById(id);
 
       if (!payment) {
         return res.status(404).json({
@@ -292,8 +225,8 @@ router.get('/policy/:policyId',
     try {
       const { policyId } = req.params;
 
-      // Verify policy exists
-      const policy = await db.get('SELECT id FROM insurance_policies WHERE id = ?', [policyId]);
+      // Verify policy exists (map camelCase to snake_case)
+      const policy = await Insurance.findById(policyId);
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -301,15 +234,7 @@ router.get('/policy/:policyId',
         });
       }
 
-      const payments = await db.all(`
-        SELECT 
-          pm.*,
-          u.full_name as recorded_by_name
-        FROM payments pm
-        LEFT JOIN users u ON pm.processed_by = u.id
-        WHERE pm.policy_id = ?
-        ORDER BY pm.payment_date DESC
-      `, [policyId]);
+      const payments = await Payment.findByPolicyId(policyId);
 
       // Calculate total paid
       const totalPaid = payments.reduce((sum, payment) => {
