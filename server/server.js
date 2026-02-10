@@ -8,7 +8,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const config = require('./config/config');
-const { testConnection } = require('./config/database');
+const { connectDB } = require('./config/database');
 
 // Initialize Express app
 const app = express();
@@ -99,15 +99,9 @@ const PORT = config.port;
 
 const startServer = async () => {
   try {
-    // Test database connection
-    console.log('Testing database connection...');
-    const dbConnected = await testConnection();
-    
-    if (!dbConnected) {
-      console.error('❌ Failed to connect to database. Please check your database configuration.');
-      console.error('Make sure MySQL is running and credentials in .env are correct.');
-      process.exit(1);
-    }
+    // Connect to SQL Server database
+    console.log('Connecting to SQL Server...');
+    await connectDB();
 
     // Start server
     app.listen(PORT, () => {
@@ -132,6 +126,7 @@ const startServer = async () => {
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
+    console.error('Make sure SQL Server is running and credentials in .env are correct.');
     process.exit(1);
   }
 };

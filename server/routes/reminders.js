@@ -30,15 +30,14 @@ router.get('/',
       const reminders = await db.all(`
         SELECT 
           r.*,
-          ip.policyNumber,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer,
-          p.contactPerson,
-          p.contactPhone
+          ip.policy_number as policyNumber,
+          p.name_km as pagodaNameKhmer,
+          p.name_en as pagodaName,
+          p.phone as contactPhone
         FROM reminders r
-        JOIN insurancePolicies ip ON r.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
-        ORDER BY r.scheduledDate DESC
+        JOIN insurance_policies ip ON r.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
+        ORDER BY r.reminder_date DESC
       `);
 
       res.json({
@@ -68,22 +67,19 @@ router.get('/pending',
       const pendingReminders = await db.all(`
         SELECT 
           r.*,
-          ip.policyNumber,
-          ip.premiumAmount,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer,
+          ip.policy_number as policyNumber,
+          ip.premium_amount as premiumAmount,
+          p.name_km as pagodaNameKhmer,
+          p.name_en as pagodaName,
           p.province,
-          p.contactPerson,
-          p.contactPhone,
-          p.chiefMonkName,
-          p.chiefMonkPhone,
-          (SELECT SUM(amount) FROM payments WHERE policyId = ip.id AND status = 'completed') as totalPaid
+          p.phone as contactPhone,
+          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as totalPaid
         FROM reminders r
-        JOIN insurancePolicies ip ON r.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
+        JOIN insurance_policies ip ON r.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
         WHERE r.status = 'pending'
-        AND r.scheduledDate <= ?
-        ORDER BY r.scheduledDate ASC
+        AND r.reminder_date <= ?
+        ORDER BY r.reminder_date ASC
       `, [today]);
 
       res.json({
@@ -130,11 +126,10 @@ router.post('/send',
       const policy = await db.get(`
         SELECT 
           ip.*,
-          p.name as pagodaName,
-          p.contactPerson,
-          p.contactPhone
-        FROM insurancePolicies ip
-        JOIN pagodas p ON ip.pagodaId = p.id
+          p.name_km as pagodaNameKhmer,
+          p.phone as contactPhone
+        FROM insurance_policies ip
+        JOIN pagodas p ON ip.pagoda_id = p.id
         WHERE ip.id = ?
       `, [policyId]);
 
@@ -151,16 +146,16 @@ router.post('/send',
       if (!reminderMessage) {
         switch (reminderType) {
           case 'payment_due':
-            reminderMessage = `សូមរំលឹកថា ការទូទាត់បុព្វលាភធានារ៉ាប់រងនឹងដល់កំណត់។ លេខគោលនយោបាយ: ${policy.policyNumber}`;
+            reminderMessage = `សូមរំលឹកថា ការទូទាត់បុព្វលាភធានារ៉ាប់រងនឹងដល់កំណត់។ លេខគោលនយោបាយ: ${policy.policy_number}`;
             break;
           case 'payment_overdue':
-            reminderMessage = `ការទូទាត់បុព្វលាភធានារ៉ាប់រងរបស់លោកអ្នកហួសកាលកំណត់ហើយ។ លេខគោលនយោបាយ: ${policy.policyNumber}`;
+            reminderMessage = `ការទូទាត់បុព្វលាភធានារ៉ាប់រងរបស់លោកអ្នកហួសកាលកំណត់ហើយ។ លេខគោលនយោបាយ: ${policy.policy_number}`;
             break;
           case 'policy_expiring':
-            reminderMessage = `គោលនយោបាយធានារ៉ាប់រងរបស់លោកអ្នកនឹងផុតកំណត់ក្នុងពេលឆាប់ៗនេះ។ លេខគោលនយោបាយ: ${policy.policyNumber}`;
+            reminderMessage = `គោលនយោបាយធានារ៉ាប់រងរបស់លោកអ្នកនឹងផុតកំណត់ក្នុងពេលឆាប់ៗនេះ។ លេខគោលនយោបាយ: ${policy.policy_number}`;
             break;
           case 'policy_expired':
-            reminderMessage = `គោលនយោបាយធានារ៉ាប់រងរបស់លោកអ្នកបានផុតកំណត់ហើយ។ លេខគោលនយោបាយ: ${policy.policyNumber}`;
+            reminderMessage = `គោលនយោបាយធានារ៉ាប់រងរបស់លោកអ្នកបានផុតកំណត់ហើយ។ លេខគោលនយោបាយ: ${policy.policy_number}`;
             break;
         }
       }
@@ -168,26 +163,26 @@ router.post('/send',
       // Create reminder
       const result = await db.run(`
         INSERT INTO reminders (
-          policyId, reminderType, scheduledDate, message,
-          sendMethod, status
-        ) VALUES (?, ?, ?, ?, ?, 'sent')
-      `, [policyId, reminderType, scheduledDate, reminderMessage, sendMethod]);
+          policy_id, reminder_type, reminder_date, notes,
+          status
+        ) VALUES (?, ?, ?, ?, 'sent')
+      `, [policyId, reminderType, scheduledDate, reminderMessage]);
 
       // Update sent date
       await db.run(
-        'UPDATE reminders SET sentDate = CURRENT_TIMESTAMP WHERE id = ?',
+        'UPDATE reminders SET sent_at = GETDATE() WHERE id = ?',
         [result.lastID]
       );
 
       const reminder = await db.get(`
         SELECT 
           r.*,
-          ip.policyNumber,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer
+          ip.policy_number as policyNumber,
+          p.name_km as pagodaNameKhmer,
+          p.name_en as pagodaName
         FROM reminders r
-        JOIN insurancePolicies ip ON r.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
+        JOIN insurance_policies ip ON r.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
         WHERE r.id = ?
       `, [result.lastID]);
 
@@ -237,7 +232,7 @@ router.put('/:id',
       // ប្រសិនបើសម្គាល់ថាបានផ្ញើ កែសម្រួលកាលបរិច្ឆេទផ្ញើ
       if (status === 'sent') {
         await db.run(
-          'UPDATE reminders SET sentDate = CURRENT_TIMESTAMP WHERE id = ?',
+          'UPDATE reminders SET sent_at = GETDATE() WHERE id = ?',
           [id]
         );
       }
@@ -245,12 +240,12 @@ router.put('/:id',
       const updatedReminder = await db.get(`
         SELECT 
           r.*,
-          ip.policyNumber,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer
+          ip.policy_number as policyNumber,
+          p.name_km as pagodaNameKhmer,
+          p.name_en as pagodaName
         FROM reminders r
-        JOIN insurancePolicies ip ON r.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
+        JOIN insurance_policies ip ON r.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
         WHERE r.id = ?
       `, [id]);
 

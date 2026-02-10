@@ -2,7 +2,7 @@
 ## ប្រព័ន្ធគ្រប់គ្រងការបង់ថ្លៃអគ្គិភ័យវត្ត
 
 [![Node.js](https://img.shields.io/badge/Node.js-v14+-green.svg)](https://nodejs.org/)
-[![MySQL](https://img.shields.io/badge/MySQL-v8+-blue.svg)](https://www.mysql.com/)
+[![SQL Server](https://img.shields.io/badge/SQL_Server-2019+-blue.svg)](https://www.microsoft.com/sql-server)
 [![Express.js](https://img.shields.io/badge/Express.js-v4.18+-lightgrey.svg)](https://expressjs.com/)
 [![Bootstrap](https://img.shields.io/badge/Bootstrap-v5.3+-purple.svg)](https://getbootstrap.com/)
 
@@ -60,7 +60,7 @@ A comprehensive insurance payment management system for Buddhist temples (pagoda
 ### Backend
 - **Node.js** - Server runtime
 - **Express.js** - Web framework
-- **MySQL** - Database
+- **Microsoft SQL Server** - Database
 - **JWT** - Authentication
 - **Bcrypt** - Password hashing
 - **Nodemailer** - Email service
@@ -78,9 +78,10 @@ A comprehensive insurance payment management system for Buddhist temples (pagoda
 Before you begin, ensure you have the following installed:
 
 - **Node.js** (v14 or higher)
-- **MySQL** (v8 or higher)
+- **Microsoft SQL Server** (Express, Standard, or Enterprise edition)
 - **npm** (comes with Node.js)
 - **Git** (for cloning the repository)
+- **SQL Server Management Studio (SSMS)** - Optional but recommended for database management
 
 ## Installation / ការតម្លើង
 
@@ -97,23 +98,50 @@ cd pagoda-fire-insurance-system
 npm install
 ```
 
-### 3. Setup Database
+### 3. Setup Database (SQL Server)
 
-Create a MySQL database:
+#### Option 1: Using sqlcmd (Command Line)
+
+Create the database:
 
 ```bash
-mysql -u root -p
+sqlcmd -S localhost -E
 ```
 
 ```sql
-CREATE DATABASE pagoda_insurance CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-exit;
+CREATE DATABASE pagoda_insurance;
+GO
+USE pagoda_insurance;
+GO
 ```
 
 Import the database schema:
 
 ```bash
-mysql -u root -p pagoda_insurance < server/database/schema.sql
+sqlcmd -S localhost -E -d pagoda_insurance -i server/database/schema.sql
+```
+
+#### Option 2: Using SQL Server Management Studio (SSMS)
+
+1. Open SSMS and connect to your SQL Server instance
+2. Right-click on "Databases" → "New Database"
+3. Name it `pagoda_insurance`
+4. Click OK
+5. Open a new query window
+6. Load the `server/database/schema.sql` file
+7. Execute the script (F5)
+
+#### Verify Installation
+
+Check that tables were created:
+
+```sql
+SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE';
+GO
+
+-- Check default users
+SELECT * FROM users;
+GO
 ```
 
 ### 4. Configure Environment Variables
@@ -132,15 +160,16 @@ NODE_ENV=development
 PORT=3000
 BASE_URL=http://localhost:3000
 
-# Database
+# SQL Server Configuration
 DB_HOST=localhost
-DB_USER=root
-DB_PASSWORD=your_mysql_password
 DB_NAME=pagoda_insurance
-DB_PORT=3306
+DB_USER=
+DB_PASSWORD=
+DB_DOMAIN=
+DB_ENCRYPT=false
 
 # JWT
-JWT_SECRET=your_very_secret_key_at_least_32_characters_long
+JWT_SECRET=pagoda_secret_key_2026_change_in_production
 JWT_EXPIRE=7d
 
 # Email (Gmail example)
@@ -160,10 +189,36 @@ MAX_FILE_SIZE=5242880
 UPLOAD_DIR=uploads/
 ```
 
+**Database Authentication Options:**
+
+**Option 1: Windows Authentication (Recommended)**
+- Leave `DB_USER` and `DB_PASSWORD` empty
+- The server will use your Windows credentials automatically
+- This is the most secure option if running on Windows
+
+```env
+DB_HOST=localhost
+DB_NAME=pagoda_insurance
+DB_USER=
+DB_PASSWORD=
+```
+
+**Option 2: SQL Server Authentication**
+- Requires a SQL Server login account
+- Set `DB_USER` and `DB_PASSWORD` with your SQL Server credentials
+
+```env
+DB_HOST=localhost
+DB_NAME=pagoda_insurance
+DB_USER=sa
+DB_PASSWORD=your_sql_server_password
+```
+
 **Important Notes:**
 - For Gmail, you need to use an [App Password](https://support.google.com/accounts/answer/185833), not your regular password
 - Generate a strong JWT secret (at least 32 characters)
 - Change all default passwords in production
+- `DB_ENCRYPT` should be `false` for local development, `true` for Azure SQL or production
 
 ### 5. Start the Server
 
@@ -181,14 +236,19 @@ npm start
 
 The server will start on `http://localhost:3000`
 
-## Default Admin Account / គណនីអ្នកគ្រប់គ្រងលំនាំដើម
+## Default Admin Accounts / គណនីអ្នកគ្រប់គ្រងលំនាំដើម
 
-The database schema includes a default admin account:
+The database schema includes two default admin accounts:
 
+**Admin Account:**
 - **Username:** `admin`
 - **Password:** `admin123`
 
-**⚠️ IMPORTANT:** Change this password immediately after first login!
+**Punleu Account:**
+- **Username:** `Punleu`
+- **Password:** `00008888`
+
+**⚠️ IMPORTANT:** Change these passwords immediately after first login!
 
 ## Project Structure / រចនាសម្ព័ន្ធគម្រោង
 
@@ -366,9 +426,13 @@ pagoda-fire-insurance-system/
 ## Troubleshooting / ដោះស្រាយបញ្ហា
 
 ### Database Connection Failed
-- Check if MySQL is running
+- Check if SQL Server is running:
+  - Open "SQL Server Configuration Manager"
+  - Verify "SQL Server (MSSQLSERVER)" service is running
 - Verify database credentials in `.env`
-- Ensure database exists: `SHOW DATABASES;`
+- Ensure database exists: `SELECT name FROM sys.databases;`
+- For Windows Authentication, ensure your Windows user has access to SQL Server
+- Check SQL Server TCP/IP is enabled in Configuration Manager
 
 ### Email Not Sending
 - Verify email configuration in `.env`
@@ -379,11 +443,18 @@ pagoda-fire-insurance-system/
 - Check if port 3000 is already in use
 - Verify all dependencies are installed: `npm install`
 - Check Node.js version: `node --version` (should be v14+)
+- Verify SQL Server connection settings
 
 ### Login Issues
-- Verify database has the default admin user
+- Verify database has the default admin users
 - Check browser console for errors
 - Clear browser cache and cookies
+
+### SQL Server Specific Issues
+- **Named Instance:** If using a named instance, use `DB_HOST=localhost\\INSTANCENAME`
+- **Firewall:** Ensure SQL Server port (default 1433) is not blocked
+- **TCP/IP Protocol:** Enable TCP/IP in SQL Server Configuration Manager
+- **Authentication Mode:** Ensure SQL Server is configured for Mixed Mode authentication if using SQL Server Authentication
 
 ## Development / ការអភិវឌ្ឍន៍
 
@@ -436,7 +507,7 @@ For issues and questions:
 
 - Bootstrap team for the excellent UI framework
 - Express.js community
-- MySQL team
+- Microsoft SQL Server team
 - Chart.js for data visualization
 - All open-source contributors
 

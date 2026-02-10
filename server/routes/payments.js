@@ -30,8 +30,7 @@ router.get('/',
     query('page').optional().isInt({ min: 1 }),
     query('limit').optional().isInt({ min: 1, max: 100 }),
     query('policyId').optional().isInt(),
-    query('paymentMethod').optional().isIn(['cash', 'bank_transfer', 'cheque', 'mobile_payment']),
-    query('status').optional().isIn(['pending', 'completed', 'failed']),
+    query('paymentMethod').optional().isIn(['cash', 'transfer', 'check']),
     query('startDate').optional().isISO8601(),
     query('endDate').optional().isISO8601()
   ],
@@ -41,30 +40,26 @@ router.get('/',
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 20;
       const offset = (page - 1) * limit;
-      const { policyId, paymentMethod, status, startDate, endDate } = req.query;
+      const { policyId, paymentMethod, startDate, endDate } = req.query;
 
       // Build WHERE clause
       const conditions = [];
       const params = [];
 
       if (policyId) {
-        conditions.push('pm.policyId = ?');
+        conditions.push('pm.policy_id = ?');
         params.push(policyId);
       }
       if (paymentMethod) {
-        conditions.push('pm.paymentMethod = ?');
+        conditions.push('pm.payment_method = ?');
         params.push(paymentMethod);
       }
-      if (status) {
-        conditions.push('pm.status = ?');
-        params.push(status);
-      }
       if (startDate) {
-        conditions.push('pm.paymentDate >= ?');
+        conditions.push('pm.payment_date >= ?');
         params.push(startDate);
       }
       if (endDate) {
-        conditions.push('pm.paymentDate <= ?');
+        conditions.push('pm.payment_date <= ?');
         params.push(endDate);
       }
 
@@ -81,16 +76,16 @@ router.get('/',
       const payments = await db.all(`
         SELECT 
           pm.*,
-          ip.policyNumber,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer
+          ip.policy_number,
+          p.name_en as pagoda_name,
+          p.name_km as pagoda_name_khmer
         FROM payments pm
-        JOIN insurancePolicies ip ON pm.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
+        JOIN insurance_policies ip ON pm.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
         ${whereClause}
-        ORDER BY pm.paymentDate DESC
-        LIMIT ? OFFSET ?
-      `, [...params, limit, offset]);
+        ORDER BY pm.payment_date DESC
+        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+      `, [...params, offset, limit]);
 
       res.json({
         success: true,
@@ -129,17 +124,17 @@ router.get('/:id',
       const payment = await db.get(`
         SELECT 
           pm.*,
-          ip.policyNumber,
-          ip.coverageAmount,
-          ip.premiumAmount,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer,
+          ip.policy_number,
+          ip.premium_amount,
+          p.name_en as pagoda_name,
+          p.name_km as pagoda_name_khmer,
           p.province,
           p.district,
-          p.address
+          p.village,
+          p.commune
         FROM payments pm
-        JOIN insurancePolicies ip ON pm.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
+        JOIN insurance_policies ip ON pm.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
         WHERE pm.id = ?
       `, [id]);
 
@@ -175,7 +170,7 @@ router.post('/',
     body('policyId').isInt().withMessage('Valid policy ID is required'),
     body('amount').isFloat({ min: 0 }).withMessage('Valid amount is required'),
     body('paymentDate').isISO8601().withMessage('Valid payment date is required'),
-    body('paymentMethod').isIn(['cash', 'bank_transfer', 'cheque', 'mobile_payment']).withMessage('Invalid payment method'),
+    body('paymentMethod').isIn(['cash', 'transfer', 'check']).withMessage('Invalid payment method'),
     body('referenceNumber').optional().trim(),
     body('notes').optional().trim()
   ],
@@ -185,7 +180,7 @@ router.post('/',
       const { policyId, amount, paymentDate, paymentMethod, referenceNumber, notes } = req.body;
 
       // Verify policy exists
-      const policy = await db.get('SELECT * FROM insurancePolicies WHERE id = ?', [policyId]);
+      const policy = await db.get('SELECT * FROM insurance_policies WHERE id = ?', [policyId]);
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -197,17 +192,17 @@ router.post('/',
       // បង្កើតលេខបង្កាន់ដៃ
       const year = new Date(paymentDate).getFullYear();
       const count = await db.get(
-        'SELECT COUNT(*) as count FROM payments WHERE strftime("%Y", paymentDate) = ?',
-        [year.toString()]
+        'SELECT COUNT(*) as count FROM payments WHERE YEAR(payment_date) = ?',
+        [year]
       );
       const receiptNumber = `RCP-${year}-${String(count.count + 1).padStart(5, '0')}`;
 
       const result = await db.run(`
         INSERT INTO payments (
-          policyId, amount, paymentDate, paymentMethod,
-          referenceNumber, receiptNumber, status, notes,
-          recordedBy
-        ) VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?)
+          policy_id, amount, payment_date, payment_method,
+          reference_number, receipt_number, notes,
+          processed_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         policyId, amount, paymentDate, paymentMethod,
         referenceNumber, receiptNumber, notes, req.user.id
@@ -244,22 +239,21 @@ router.get('/:id/receipt',
       const payment = await db.get(`
         SELECT 
           pm.*,
-          ip.policyNumber,
-          ip.coverageAmount,
-          ip.startDate,
-          ip.endDate,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer,
+          ip.policy_number,
+          ip.premium_amount,
+          ip.coverage_start,
+          ip.coverage_end,
+          p.name_en as pagoda_name,
+          p.name_km as pagoda_name_khmer,
           p.province,
           p.district,
           p.commune,
           p.village,
-          p.address,
-          u.fullName as recordedByName
+          u.full_name as recorded_by_name
         FROM payments pm
-        JOIN insurancePolicies ip ON pm.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
-        LEFT JOIN users u ON pm.recordedBy = u.id
+        JOIN insurance_policies ip ON pm.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
+        LEFT JOIN users u ON pm.processed_by = u.id
         WHERE pm.id = ?
       `, [id]);
 
@@ -275,7 +269,7 @@ router.get('/:id/receipt',
       const pdfBuffer = await pdfGenerator.generateReceipt(payment);
 
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=receipt-${payment.receiptNumber}.pdf`);
+      res.setHeader('Content-Disposition', `attachment; filename=receipt-${payment.receipt_number}.pdf`);
       res.send(pdfBuffer);
     } catch (error) {
       console.error('Error generating receipt:', error);
@@ -299,7 +293,7 @@ router.get('/policy/:policyId',
       const { policyId } = req.params;
 
       // Verify policy exists
-      const policy = await db.get('SELECT id FROM insurancePolicies WHERE id = ?', [policyId]);
+      const policy = await db.get('SELECT id FROM insurance_policies WHERE id = ?', [policyId]);
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -310,16 +304,16 @@ router.get('/policy/:policyId',
       const payments = await db.all(`
         SELECT 
           pm.*,
-          u.fullName as recordedByName
+          u.full_name as recorded_by_name
         FROM payments pm
-        LEFT JOIN users u ON pm.recordedBy = u.id
-        WHERE pm.policyId = ?
-        ORDER BY pm.paymentDate DESC
+        LEFT JOIN users u ON pm.processed_by = u.id
+        WHERE pm.policy_id = ?
+        ORDER BY pm.payment_date DESC
       `, [policyId]);
 
       // Calculate total paid
       const totalPaid = payments.reduce((sum, payment) => {
-        return sum + (payment.status === 'completed' ? payment.amount : 0);
+        return sum + parseFloat(payment.amount || 0);
       }, 0);
 
       res.json({
