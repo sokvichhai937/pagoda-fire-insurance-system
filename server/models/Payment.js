@@ -124,6 +124,36 @@ class Payment {
     return result.recordset;
   }
 
+  // Count payments with filters - រាប់ការបង់ប្រាក់
+  static async count(filters = {}) {
+    let query = 'SELECT COUNT(*) as total FROM payments WHERE 1=1';
+    const request = pool.request();
+
+    // Apply filters
+    if (filters.policy_id) {
+      query += ' AND policy_id = @policy_id';
+      request.input('policy_id', sql.Int, filters.policy_id);
+    }
+
+    if (filters.payment_method) {
+      query += ' AND payment_method = @payment_method';
+      request.input('payment_method', sql.NVarChar, filters.payment_method);
+    }
+
+    if (filters.start_date) {
+      query += ' AND payment_date >= @start_date';
+      request.input('start_date', sql.Date, filters.start_date);
+    }
+
+    if (filters.end_date) {
+      query += ' AND payment_date <= @end_date';
+      request.input('end_date', sql.Date, filters.end_date);
+    }
+
+    const result = await request.query(query);
+    return result.recordset[0].total;
+  }
+
   // Delete payment - លុបការបង់ប្រាក់
   static async delete(id) {
     const query = 'DELETE FROM payments WHERE id = @id';

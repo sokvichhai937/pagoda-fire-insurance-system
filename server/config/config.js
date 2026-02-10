@@ -9,16 +9,11 @@ module.exports = {
   env: process.env.NODE_ENV || 'development',
   baseUrl: process.env.BASE_URL || 'http://localhost:3000',
 
-  // Database configuration
+  // Database configuration (handled by database.js for SQL Server)
+  // SQL Server connection is managed via database.js using mssql package
   db: {
     host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'pagoda_insurance',
-    port: process.env.DB_PORT || 3306,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+    database: process.env.DB_NAME || 'pagoda_insurance'
   },
 
   // JWT configuration

@@ -4,8 +4,10 @@
 const express = require('express');
 const router = express.Router();
 const { body, param, validationResult } = require('express-validator');
-const db = require('../database/db');
+const Reminder = require('../models/Reminder');
+const Insurance = require('../models/Insurance');
 const { authenticate, isAdminOrStaff } = require('../middleware/auth');
+const { pool, sql } = require('../config/database');
 
 // Helper function to handle validation errors
 // មុខងារជំនួយដើម្បីគ្រប់គ្រងកំហុសនៃការផ្ទៀងផ្ទាត់
@@ -27,7 +29,7 @@ router.get('/',
   authenticate,
   async (req, res) => {
     try {
-      const reminders = await db.all(`
+      const result = await pool.request().query(`
         SELECT 
           r.*,
           ip.policy_number as policyNumber,
@@ -43,7 +45,7 @@ router.get('/',
       res.json({
         success: true,
         message: 'Reminders retrieved successfully',
-        data: reminders
+        data: result.recordset
       });
     } catch (error) {
       console.error('Error fetching reminders:', error);
@@ -64,28 +66,30 @@ router.get('/pending',
     try {
       const today = new Date().toISOString().split('T')[0];
 
-      const pendingReminders = await db.all(`
-        SELECT 
-          r.*,
-          ip.policy_number as policyNumber,
-          ip.premium_amount as premiumAmount,
-          p.name_km as pagodaNameKhmer,
-          p.name_en as pagodaName,
-          p.province,
-          p.phone as contactPhone,
-          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as totalPaid
-        FROM reminders r
-        JOIN insurance_policies ip ON r.policy_id = ip.id
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE r.status = 'pending'
-        AND r.reminder_date <= ?
-        ORDER BY r.reminder_date ASC
-      `, [today]);
+      const result = await pool.request()
+        .input('today', sql.Date, today)
+        .query(`
+          SELECT 
+            r.*,
+            ip.policy_number as policyNumber,
+            ip.premium_amount as premiumAmount,
+            p.name_km as pagodaNameKhmer,
+            p.name_en as pagodaName,
+            p.province,
+            p.phone as contactPhone,
+            (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as totalPaid
+          FROM reminders r
+          JOIN insurance_policies ip ON r.policy_id = ip.id
+          JOIN pagodas p ON ip.pagoda_id = p.id
+          WHERE r.status = 'pending'
+          AND r.reminder_date <= @today
+          ORDER BY r.reminder_date ASC
+        `);
 
       res.json({
         success: true,
         message: 'Pending reminders retrieved successfully',
-        data: pendingReminders
+        data: result.recordset
       });
     } catch (error) {
       console.error('Error fetching pending reminders:', error);
@@ -123,16 +127,19 @@ router.post('/send',
       } = req.body;
 
       // Verify policy exists
-      const policy = await db.get(`
-        SELECT 
-          ip.*,
-          p.name_km as pagodaNameKhmer,
-          p.phone as contactPhone
-        FROM insurance_policies ip
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE ip.id = ?
-      `, [policyId]);
+      const result = await pool.request()
+        .input('policyId', sql.Int, policyId)
+        .query(`
+          SELECT 
+            ip.*,
+            p.name_km as pagodaNameKhmer,
+            p.phone as contactPhone
+          FROM insurance_policies ip
+          JOIN pagodas p ON ip.pagoda_id = p.id
+          WHERE ip.id = @policyId
+        `);
 
+      const policy = result.recordset[0];
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -160,36 +167,52 @@ router.post('/send',
         }
       }
 
-      // Create reminder
-      const result = await db.run(`
-        INSERT INTO reminders (
-          policy_id, reminder_type, reminder_date, notes,
-          status
-        ) VALUES (?, ?, ?, ?, 'sent')
-      `, [policyId, reminderType, scheduledDate, reminderMessage]);
+      // Create reminder with status 'sent'
+      // Map sendMethod to schema-compliant reminder_type
+      // NOTE: Schema only supports 'email', 'sms', 'both'. 
+      // For backward compatibility, 'phone' and 'letter' are mapped to 'sms'
+      // TODO: Consider extending schema to support additional reminder types
+      let dbReminderType = sendMethod;
+      if (sendMethod === 'phone' || sendMethod === 'letter') {
+        dbReminderType = 'sms';
+      }
+      
+      const insertResult = await pool.request()
+        .input('policy_id', sql.Int, policyId)
+        .input('reminder_type', sql.NVarChar, dbReminderType)
+        .input('reminder_date', sql.Date, scheduledDate)
+        .input('notes', sql.NVarChar(sql.MAX), reminderMessage)
+        .input('status', sql.NVarChar, 'sent')
+        .input('sent_at', sql.DateTime, new Date())
+        .query(`
+          INSERT INTO reminders (
+            policy_id, reminder_type, reminder_date, notes,
+            status, sent_at
+          )
+          OUTPUT INSERTED.id
+          VALUES (@policy_id, @reminder_type, @reminder_date, @notes, @status, @sent_at)
+        `);
 
-      // Update sent date
-      await db.run(
-        'UPDATE reminders SET sent_at = GETDATE() WHERE id = ?',
-        [result.lastID]
-      );
+      const reminderId = insertResult.recordset[0].id;
 
-      const reminder = await db.get(`
-        SELECT 
-          r.*,
-          ip.policy_number as policyNumber,
-          p.name_km as pagodaNameKhmer,
-          p.name_en as pagodaName
-        FROM reminders r
-        JOIN insurance_policies ip ON r.policy_id = ip.id
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE r.id = ?
-      `, [result.lastID]);
+      const reminderResult = await pool.request()
+        .input('id', sql.Int, reminderId)
+        .query(`
+          SELECT 
+            r.*,
+            ip.policy_number as policyNumber,
+            p.name_km as pagodaNameKhmer,
+            p.name_en as pagodaName
+          FROM reminders r
+          JOIN insurance_policies ip ON r.policy_id = ip.id
+          JOIN pagodas p ON ip.pagoda_id = p.id
+          WHERE r.id = @id
+        `);
 
       res.status(201).json({
         success: true,
         message: 'Reminder sent successfully',
-        data: reminder
+        data: reminderResult.recordset[0]
       });
     } catch (error) {
       console.error('Error sending reminder:', error);
@@ -217,7 +240,7 @@ router.put('/:id',
       const { id } = req.params;
       const { status } = req.body;
 
-      const reminder = await db.get('SELECT id FROM reminders WHERE id = ?', [id]);
+      const reminder = await Reminder.findById(id);
       if (!reminder) {
         return res.status(404).json({
           success: false,
@@ -226,33 +249,28 @@ router.put('/:id',
       }
 
       // Update status
-      await db.run('UPDATE reminders SET status = ? WHERE id = ?', [status, id]);
-
-      // If marked as sent, update sent date
       // ប្រសិនបើសម្គាល់ថាបានផ្ញើ កែសម្រួលកាលបរិច្ឆេទផ្ញើ
-      if (status === 'sent') {
-        await db.run(
-          'UPDATE reminders SET sent_at = GETDATE() WHERE id = ?',
-          [id]
-        );
-      }
+      const sent_at = status === 'sent' ? new Date() : reminder.sent_at;
+      await Reminder.updateStatus(id, status, sent_at);
 
-      const updatedReminder = await db.get(`
-        SELECT 
-          r.*,
-          ip.policy_number as policyNumber,
-          p.name_km as pagodaNameKhmer,
-          p.name_en as pagodaName
-        FROM reminders r
-        JOIN insurance_policies ip ON r.policy_id = ip.id
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE r.id = ?
-      `, [id]);
+      const updatedResult = await pool.request()
+        .input('id', sql.Int, id)
+        .query(`
+          SELECT 
+            r.*,
+            ip.policy_number as policyNumber,
+            p.name_km as pagodaNameKhmer,
+            p.name_en as pagodaName
+          FROM reminders r
+          JOIN insurance_policies ip ON r.policy_id = ip.id
+          JOIN pagodas p ON ip.pagoda_id = p.id
+          WHERE r.id = @id
+        `);
 
       res.json({
         success: true,
         message: 'Reminder updated successfully',
-        data: updatedReminder
+        data: updatedResult.recordset[0]
       });
     } catch (error) {
       console.error('Error updating reminder:', error);
