@@ -168,9 +168,15 @@ router.post('/send',
       }
 
       // Create reminder with status 'sent'
+      // Map sendMethod to schema-compliant reminder_type
+      let dbReminderType = sendMethod;
+      if (sendMethod === 'phone' || sendMethod === 'letter') {
+        dbReminderType = 'sms';
+      }
+      
       const insertResult = await pool.request()
         .input('policy_id', sql.Int, policyId)
-        .input('reminder_type', sql.NVarChar, sendMethod || reminderType)
+        .input('reminder_type', sql.NVarChar, dbReminderType)
         .input('reminder_date', sql.Date, scheduledDate)
         .input('notes', sql.NVarChar(sql.MAX), reminderMessage)
         .input('status', sql.NVarChar, 'sent')
