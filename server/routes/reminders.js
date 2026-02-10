@@ -247,7 +247,7 @@ router.put('/:id',
 
       // Update status
       // ប្រសិនបើសម្គាល់ថាបានផ្ញើ កែសម្រួលកាលបរិច្ឆេទផ្ញើ
-      const sent_at = status === 'sent' ? new Date() : null;
+      const sent_at = status === 'sent' ? new Date() : reminder.sent_at;
       await Reminder.updateStatus(id, status, sent_at);
 
       const updatedResult = await pool.request()
