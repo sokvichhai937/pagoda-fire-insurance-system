@@ -39,15 +39,15 @@ router.get('/monthly',
       const payments = await db.all(`
         SELECT 
           pm.*,
-          ip.policyNumber,
+          ip.policy_number as policyNumber,
           p.name as pagodaName,
           p.province
         FROM payments pm
-        JOIN insurancePolicies ip ON pm.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
-        WHERE strftime('%Y-%m', pm.paymentDate) = ?
+        JOIN insurance_policies ip ON pm.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
+        WHERE FORMAT(pm.payment_date, 'yyyy-MM') = ?
         AND pm.status = 'completed'
-        ORDER BY pm.paymentDate
+        ORDER BY pm.payment_date
       `, [month]);
 
       // Calculate totals by payment method
@@ -57,14 +57,14 @@ router.get('/monthly',
 
       payments.forEach(payment => {
         totalRevenue += payment.amount;
-        if (!paymentsByMethod[payment.paymentMethod]) {
-          paymentsByMethod[payment.paymentMethod] = {
+        if (!paymentsByMethod[payment.payment_method]) {
+          paymentsByMethod[payment.payment_method] = {
             count: 0,
             amount: 0
           };
         }
-        paymentsByMethod[payment.paymentMethod].count++;
-        paymentsByMethod[payment.paymentMethod].amount += payment.amount;
+        paymentsByMethod[payment.payment_method].count++;
+        paymentsByMethod[payment.payment_method].amount += payment.amount;
       });
 
       // Get new policies for the month
@@ -74,10 +74,10 @@ router.get('/monthly',
           ip.*,
           p.name as pagodaName,
           p.province
-        FROM insurancePolicies ip
-        JOIN pagodas p ON ip.pagodaId = p.id
-        WHERE strftime('%Y-%m', ip.createdAt) = ?
-        ORDER BY ip.createdAt
+        FROM insurance_policies ip
+        JOIN pagodas p ON ip.pagoda_id = p.id
+        WHERE FORMAT(ip.created_at, 'yyyy-MM') = ?
+        ORDER BY ip.created_at
       `, [month]);
 
       // Get policies by province
@@ -89,9 +89,9 @@ router.get('/monthly',
           COUNT(DISTINCT p.id) as pagodaCount,
           SUM(CASE WHEN ip.status = 'active' THEN 1 ELSE 0 END) as activePolicies
         FROM pagodas p
-        LEFT JOIN insurancePolicies ip ON p.id = ip.pagodaId
+        LEFT JOIN insurance_policies ip ON p.id = ip.pagoda_id
         GROUP BY p.province
-        ORDER BY policyCount DESC
+        ORDER BY COUNT(DISTINCT ip.id) DESC
       `);
 
       res.json({
@@ -137,38 +137,38 @@ router.get('/yearly',
       // យករបាយការណ៍រាយខែ
       const monthlyData = await db.all(`
         SELECT 
-          strftime('%m', pm.paymentDate) as month,
+          FORMAT(pm.payment_date, 'MM') as month,
           COUNT(*) as paymentCount,
           SUM(pm.amount) as totalAmount
         FROM payments pm
-        WHERE strftime('%Y', pm.paymentDate) = ?
+        WHERE YEAR(pm.payment_date) = ?
         AND pm.status = 'completed'
-        GROUP BY month
-        ORDER BY month
+        GROUP BY FORMAT(pm.payment_date, 'MM')
+        ORDER BY FORMAT(pm.payment_date, 'MM')
       `, [year]);
 
       // Get total revenue
       const revenueResult = await db.get(`
         SELECT SUM(amount) as totalRevenue
         FROM payments
-        WHERE strftime('%Y', paymentDate) = ?
+        WHERE YEAR(payment_date) = ?
         AND status = 'completed'
       `, [year]);
 
       // Get new policies count
       const policiesResult = await db.get(`
         SELECT COUNT(*) as count
-        FROM insurancePolicies
-        WHERE strftime('%Y', createdAt) = ?
+        FROM insurance_policies
+        WHERE YEAR(created_at) = ?
       `, [year]);
 
       // Get active policies at year end
       const activePoliciesResult = await db.get(`
         SELECT COUNT(*) as count
-        FROM insurancePolicies
+        FROM insurance_policies
         WHERE status = 'active'
-        AND strftime('%Y', startDate) <= ?
-        AND strftime('%Y', endDate) >= ?
+        AND YEAR(start_date) <= ?
+        AND YEAR(end_date) >= ?
       `, [year, year]);
 
       // Get policies by type
@@ -176,10 +176,10 @@ router.get('/yearly',
         SELECT 
           p.type,
           COUNT(ip.id) as count,
-          SUM(ip.premiumAmount) as totalPremium
-        FROM insurancePolicies ip
-        JOIN pagodas p ON ip.pagodaId = p.id
-        WHERE strftime('%Y', ip.createdAt) = ?
+          SUM(ip.premium_amount) as totalPremium
+        FROM insurance_policies ip
+        JOIN pagodas p ON ip.pagoda_id = p.id
+        WHERE YEAR(ip.created_at) = ?
         GROUP BY p.type
       `, [year]);
 
@@ -190,13 +190,13 @@ router.get('/yearly',
           COUNT(DISTINCT ip.id) as policyCount,
           SUM(pm.amount) as totalRevenue
         FROM payments pm
-        JOIN insurancePolicies ip ON pm.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
-        WHERE strftime('%Y', pm.paymentDate) = ?
+        JOIN insurance_policies ip ON pm.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
+        WHERE YEAR(pm.payment_date) = ?
         AND pm.status = 'completed'
         GROUP BY p.province
-        ORDER BY totalRevenue DESC
-        LIMIT 10
+        ORDER BY SUM(pm.amount) DESC
+        OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY
       `, [year]);
 
       res.json({
@@ -238,19 +238,19 @@ router.get('/pagoda-status',
         SELECT 
           p.id,
           p.name,
-          p.nameKhmer,
+          p.name_khmer as nameKhmer,
           p.province,
           p.district,
           ip.id as policyId,
-          ip.policyNumber,
+          ip.policy_number as policyNumber,
           ip.status as policyStatus,
-          ip.startDate,
-          ip.endDate,
-          ip.premiumAmount,
-          (SELECT SUM(amount) FROM payments WHERE policyId = ip.id AND status = 'completed') as totalPaid,
-          (SELECT MAX(paymentDate) FROM payments WHERE policyId = ip.id AND status = 'completed') as lastPaymentDate
+          ip.start_date as startDate,
+          ip.end_date as endDate,
+          ip.premium_amount as premiumAmount,
+          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id AND status = 'completed') as totalPaid,
+          (SELECT MAX(payment_date) FROM payments WHERE policy_id = ip.id AND status = 'completed') as lastPaymentDate
         FROM pagodas p
-        LEFT JOIN insurancePolicies ip ON p.id = ip.pagodaId AND ip.status = 'active'
+        LEFT JOIN insurance_policies ip ON p.id = ip.pagoda_id AND ip.status = 'active'
         ORDER BY p.province, p.name
       `);
 
@@ -327,7 +327,7 @@ router.get('/stats',
       // Active policies
       const activePolicies = await db.get(`
         SELECT COUNT(*) as count 
-        FROM insurancePolicies 
+        FROM insurance_policies 
         WHERE status = 'active'
       `);
 
@@ -337,7 +337,7 @@ router.get('/stats',
           COUNT(*) as count,
           SUM(amount) as total
         FROM payments
-        WHERE strftime('%Y-%m', paymentDate) = ?
+        WHERE FORMAT(payment_date, 'yyyy-MM') = ?
         AND status = 'completed'
       `, [monthStr]);
 
@@ -351,13 +351,13 @@ router.get('/stats',
       // Overdue payments (policies with unpaid premiums)
       const overduePayments = await db.get(`
         SELECT COUNT(*) as count
-        FROM insurancePolicies ip
+        FROM insurance_policies ip
         WHERE ip.status = 'active'
         AND (
           SELECT COALESCE(SUM(amount), 0)
           FROM payments
-          WHERE policyId = ip.id AND status = 'completed'
-        ) < ip.premiumAmount
+          WHERE policy_id = ip.id AND status = 'completed'
+        ) < ip.premium_amount
       `);
 
       // Recent policies (last 5)
@@ -365,24 +365,24 @@ router.get('/stats',
         SELECT 
           ip.*,
           p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer
-        FROM insurancePolicies ip
-        JOIN pagodas p ON ip.pagodaId = p.id
-        ORDER BY ip.createdAt DESC
-        LIMIT 5
+          p.name_khmer as pagodaNameKhmer
+        FROM insurance_policies ip
+        JOIN pagodas p ON ip.pagoda_id = p.id
+        ORDER BY ip.created_at DESC
+        OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY
       `);
 
       // Recent payments (last 5)
       const recentPayments = await db.all(`
         SELECT 
           pm.*,
-          ip.policyNumber,
+          ip.policy_number as policyNumber,
           p.name as pagodaName
         FROM payments pm
-        JOIN insurancePolicies ip ON pm.policyId = ip.id
-        JOIN pagodas p ON ip.pagodaId = p.id
-        ORDER BY pm.paymentDate DESC
-        LIMIT 5
+        JOIN insurance_policies ip ON pm.policy_id = ip.id
+        JOIN pagodas p ON ip.pagoda_id = p.id
+        ORDER BY pm.payment_date DESC
+        OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY
       `);
 
       // Policies by province
@@ -391,10 +391,10 @@ router.get('/stats',
           p.province,
           COUNT(ip.id) as count
         FROM pagodas p
-        LEFT JOIN insurancePolicies ip ON p.id = ip.pagodaId AND ip.status = 'active'
+        LEFT JOIN insurance_policies ip ON p.id = ip.pagoda_id AND ip.status = 'active'
         GROUP BY p.province
-        ORDER BY count DESC
-        LIMIT 5
+        ORDER BY COUNT(ip.id) DESC
+        OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY
       `);
 
       res.json({
