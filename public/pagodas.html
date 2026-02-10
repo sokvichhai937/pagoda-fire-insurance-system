@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>វត្ត - Pagodas | Pagoda Fire Insurance</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/dashboard.html">🛡️ Pagoda Insurance</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/dashboard.html">📊 Dashboard / ផ្ទាំងគ្រប់គ្រង</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/pagodas.html">🏛️ Pagodas / វត្ត</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/insurance.html">🛡️ Insurance / ធានារ៉ាប់រង</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/payments.html">💰 Payments / ការទូទាត់</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/reports.html">📈 Reports / របាយការណ៍</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/users.html">👥 Users / អ្នកប្រើប្រាស់</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/reminders.html">🔔 Reminders / ការរំលឹក</a>
+                    </li>
+                </ul>
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" id="logoutBtn">🚪 Logout / ចាកចេញ</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <div class="row mb-3">
+            <div class="col-md-6">
+                <h2>🏛️ គ្រប់គ្រងវត្ត / Pagoda Management</h2>
+            </div>
+            <div class="col-md-6 text-end">
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#pagodaModal" id="addPagodaBtn">
+                    ➕ បន្ថែមវត្ត / Add Pagoda
+                </button>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <input type="text" class="form-control" id="searchInput" placeholder="🔍 ស្វែងរក... / Search...">
+                    </div>
+                    <div class="col-md-3">
+                        <select class="form-select" id="provinceFilter">
+                            <option value="">ខេត្ត / Province - All</option>
+                            <option value="ភ្នំពេញ">ភ្នំពេញ / Phnom Penh</option>
+                            <option value="កណ្តាល">កណ្តាល / Kandal</option>
+                            <option value="សៀមរាប">សៀមរាប / Siem Reap</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <select class="form-select" id="typeFilter">
+                            <option value="">ប្រភេទ / Type - All</option>
+                            <option value="urban">Urban / ទីក្រុង</option>
+                            <option value="rural">Rural / ជនបទ</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <select class="form-select" id="sizeFilter">
+                            <option value="">ទំហំ / Size - All</option>
+                            <option value="small">Small / តូច</option>
+                            <option value="medium">Medium / មធ្យម</option>
+                            <option value="large">Large / ធំ</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>ឈ្មោះខ្មែរ / Name KM</th>
+                                <th>Name EN</th>
+                                <th>ខេត្ត / Province</th>
+                                <th>ប្រភេទ / Type</th>
+                                <th>ទំហំ / Size</th>
+                                <th>សកម្មភាព / Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pagodaTableBody">
+                            <tr>
+                                <td colspan="7" class="text-center">Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <nav>
+                    <ul class="pagination justify-content-center" id="pagination"></ul>
+                </nav>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="pagodaModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="pagodaModalLabel">បន្ថែមវត្ត / Add Pagoda</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="pagodaForm">
+                        <input type="hidden" id="pagodaId">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label for="nameKm" class="form-label">ឈ្មោះខ្មែរ / Name (Khmer) *</label>
+                                <input type="text" class="form-control" id="nameKm" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="nameEn" class="form-label">Name (English) *</label>
+                                <input type="text" class="form-control" id="nameEn" required>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="province" class="form-label">ខេត្ត / Province *</label>
+                                <select class="form-select" id="province" required>
+                                    <option value="">Select...</option>
+                                    <option value="ភ្នំពេញ">ភ្នំពេញ / Phnom Penh</option>
+                                    <option value="កណ្តាល">កណ្តាល / Kandal</option>
+                                    <option value="សៀមរាប">សៀមរាប / Siem Reap</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="type" class="form-label">ប្រភេទ / Type *</label>
+                                <select class="form-select" id="type" required>
+                                    <option value="">Select...</option>
+                                    <option value="urban">Urban / ទីក្រុង</option>
+                                    <option value="rural">Rural / ជនបទ</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="size" class="form-label">ទំហំ / Size *</label>
+                                <select class="form-select" id="size" required>
+                                    <option value="">Select...</option>
+                                    <option value="small">Small / តូច</option>
+                                    <option value="medium">Medium / មធ្យម</option>
+                                    <option value="large">Large / ធំ</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label for="phone" class="form-label">លេខទូរស័ព្ទ / Phone</label>
+                                <input type="text" class="form-control" id="phone">
+                            </div>
+                            <div class="col-md-12">
+                                <label for="address" class="form-label">អាសយដ្ឋាន / Address</label>
+                                <textarea class="form-control" id="address" rows="2"></textarea>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">បិទ / Close</button>
+                    <button type="button" class="btn btn-primary" id="savePagodaBtn">រក្សាទុក / Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/utils.js"></script>
+    <script src="/js/pagodas.js"></script>
+</body>
+</html>
