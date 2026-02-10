@@ -31,8 +31,8 @@ router.get('/',
         SELECT 
           r.*,
           ip.policy_number as policyNumber,
-          p.name_km as pagodaName,
-          p.name_en as pagodaNameKhmer,
+          p.name_km as pagodaNameKhmer,
+          p.name_en as pagodaName,
           p.phone as contactPhone
         FROM reminders r
         JOIN insurance_policies ip ON r.policy_id = ip.id
@@ -69,8 +69,8 @@ router.get('/pending',
           r.*,
           ip.policy_number as policyNumber,
           ip.premium_amount as premiumAmount,
-          p.name_km as pagodaName,
-          p.name_en as pagodaNameKhmer,
+          p.name_km as pagodaNameKhmer,
+          p.name_en as pagodaName,
           p.province,
           p.phone as contactPhone,
           (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as totalPaid
@@ -126,7 +126,7 @@ router.post('/send',
       const policy = await db.get(`
         SELECT 
           ip.*,
-          p.name_km as pagodaName,
+          p.name_km as pagodaNameKhmer,
           p.phone as contactPhone
         FROM insurance_policies ip
         JOIN pagodas p ON ip.pagoda_id = p.id
@@ -178,8 +178,8 @@ router.post('/send',
         SELECT 
           r.*,
           ip.policy_number as policyNumber,
-          p.name_km as pagodaName,
-          p.name_en as pagodaNameKhmer
+          p.name_km as pagodaNameKhmer,
+          p.name_en as pagodaName
         FROM reminders r
         JOIN insurance_policies ip ON r.policy_id = ip.id
         JOIN pagodas p ON ip.pagoda_id = p.id
@@ -241,8 +241,8 @@ router.put('/:id',
         SELECT 
           r.*,
           ip.policy_number as policyNumber,
-          p.name_km as pagodaName,
-          p.name_en as pagodaNameKhmer
+          p.name_km as pagodaNameKhmer,
+          p.name_en as pagodaName
         FROM reminders r
         JOIN insurance_policies ip ON r.policy_id = ip.id
         JOIN pagodas p ON ip.pagoda_id = p.id

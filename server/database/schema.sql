@@ -82,6 +82,7 @@ CREATE TABLE buildings (
   condition NVARCHAR(20) CHECK (condition IN ('excellent', 'good', 'fair', 'poor')),
   notes NVARCHAR(MAX),
   created_at DATETIME DEFAULT GETDATE(),
+  updated_at DATETIME DEFAULT GETDATE(),
   FOREIGN KEY (pagoda_id) REFERENCES pagodas(id) ON DELETE CASCADE
 );
 GO
