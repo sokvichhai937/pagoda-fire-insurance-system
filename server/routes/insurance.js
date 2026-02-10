@@ -1,0 +1,434 @@
+// ប្រព័ន្ធគណនា និងគ្រប់គ្រងធានារ៉ាប់រង
+// Insurance Calculation and Policy Management System
+
+const express = require('express');
+const router = express.Router();
+const { body, param, query, validationResult } = require('express-validator');
+const db = require('../database/db');
+const { authenticate, isAdminOrStaff } = require('../middleware/auth');
+const insuranceCalculator = require('../utils/insuranceCalculator');
+
+// Helper function to handle validation errors
+// មុខងារជំនួយដើម្បីគ្រប់គ្រងកំហុសនៃការផ្ទៀងផ្ទាត់
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: errors.array()
+    });
+  }
+  next();
+};
+
+// POST /api/insurance/calculate - Calculate premium
+// គណនាបុព្វលាភធានារ៉ាប់រង
+router.post('/calculate',
+  authenticate,
+  [
+    body('pagodaType').isIn(['city', 'rural', 'forest']).withMessage('Invalid pagoda type'),
+    body('pagodaSize').isIn(['small', 'medium', 'large']).withMessage('Invalid pagoda size'),
+    body('buildings').isArray({ min: 1 }).withMessage('At least one building is required'),
+    body('buildings.*.buildingType').isIn(['shrine', 'hall', 'residence', 'kitchen', 'storage', 'other']),
+    body('buildings.*.constructionType').isIn(['concrete', 'wood', 'mixed']),
+    body('buildings.*.estimatedValue').isFloat({ min: 0 }),
+    body('buildings.*.area').optional().isFloat({ min: 0 }),
+    body('buildings.*.yearBuilt').optional().isInt({ min: 1900, max: new Date().getFullYear() })
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { pagodaType, pagodaSize, buildings } = req.body;
+
+      // Calculate premium using insurance calculator utility
+      // គណនាបុព្វលាភដោយប្រើឧបករណ៍គណនាធានារ៉ាប់រង
+      const calculation = insuranceCalculator.calculatePremium({
+        pagodaType,
+        pagodaSize,
+        buildings
+      });
+
+      res.json({
+        success: true,
+        message: 'Premium calculated successfully',
+        data: calculation
+      });
+    } catch (error) {
+      console.error('Error calculating premium:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to calculate premium',
+        error: error.message
+      });
+    }
+  }
+);
+
+// GET /api/insurance/policies - Get all policies (with filters and pagination)
+// យកបញ្ជីគោលនយោបាយធានារ៉ាប់រងទាំងអស់ (ជាមួយការត្រង និងការបែងចែកទំព័រ)
+router.get('/policies',
+  authenticate,
+  [
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('status').optional().isIn(['active', 'expired', 'cancelled']),
+    query('province').optional().trim(),
+    query('search').optional().trim()
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 20;
+      const offset = (page - 1) * limit;
+      const { status, province, search } = req.query;
+
+      // Build WHERE clause
+      const conditions = [];
+      const params = [];
+
+      if (status) {
+        conditions.push('ip.status = ?');
+        params.push(status);
+      }
+      if (province) {
+        conditions.push('p.province = ?');
+        params.push(province);
+      }
+      if (search) {
+        conditions.push('(ip.policyNumber LIKE ? OR p.name LIKE ? OR p.nameKhmer LIKE ?)');
+        const searchPattern = `%${search}%`;
+        params.push(searchPattern, searchPattern, searchPattern);
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+      // Get total count
+      const countResult = await db.get(`
+        SELECT COUNT(*) as total 
+        FROM insurancePolicies ip
+        JOIN pagodas p ON ip.pagodaId = p.id
+        ${whereClause}
+      `, params);
+
+      // Get policies
+      const policies = await db.all(`
+        SELECT 
+          ip.*,
+          p.name as pagodaName,
+          p.nameKhmer as pagodaNameKhmer,
+          p.province,
+          (SELECT SUM(amount) FROM payments WHERE policyId = ip.id) as totalPaid
+        FROM insurancePolicies ip
+        JOIN pagodas p ON ip.pagodaId = p.id
+        ${whereClause}
+        ORDER BY ip.createdAt DESC
+        LIMIT ? OFFSET ?
+      `, [...params, limit, offset]);
+
+      res.json({
+        success: true,
+        message: 'Policies retrieved successfully',
+        data: {
+          policies,
+          pagination: {
+            total: countResult.total,
+            page,
+            limit,
+            totalPages: Math.ceil(countResult.total / limit)
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching policies:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve policies',
+        error: error.message
+      });
+    }
+  }
+);
+
+// GET /api/insurance/policies/:id - Get policy details
+// យកព័ត៌មានលម្អិតអំពីគោលនយោបាយធានារ៉ាប់រង
+router.get('/policies/:id',
+  authenticate,
+  param('id').isInt().withMessage('Policy ID must be an integer'),
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const policy = await db.get(`
+        SELECT 
+          ip.*,
+          p.name as pagodaName,
+          p.nameKhmer as pagodaNameKhmer,
+          p.province,
+          p.district,
+          p.address,
+          (SELECT SUM(amount) FROM payments WHERE policyId = ip.id) as totalPaid,
+          (SELECT COUNT(*) FROM payments WHERE policyId = ip.id) as paymentCount
+        FROM insurancePolicies ip
+        JOIN pagodas p ON ip.pagodaId = p.id
+        WHERE ip.id = ?
+      `, [id]);
+
+      if (!policy) {
+        return res.status(404).json({
+          success: false,
+          message: 'Policy not found'
+        });
+      }
+
+      // Get buildings covered by this policy
+      const buildings = await db.all(
+        'SELECT * FROM buildings WHERE pagodaId = ?',
+        [policy.pagodaId]
+      );
+
+      // Get payment history
+      const payments = await db.all(
+        'SELECT * FROM payments WHERE policyId = ? ORDER BY paymentDate DESC',
+        [id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Policy retrieved successfully',
+        data: {
+          ...policy,
+          buildings,
+          payments
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching policy:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to retrieve policy',
+        error: error.message
+      });
+    }
+  }
+);
+
+// POST /api/insurance/policies - Create policy (admin/staff)
+// បង្កើតគោលនយោបាយធានារ៉ាប់រងថ្មី (សម្រាប់អ្នកគ្រប់គ្រង/បុគ្គលិក)
+router.post('/policies',
+  authenticate,
+  isAdminOrStaff,
+  [
+    body('pagodaId').isInt().withMessage('Valid pagoda ID is required'),
+    body('startDate').isISO8601().withMessage('Valid start date is required'),
+    body('endDate').isISO8601().withMessage('Valid end date is required'),
+    body('coverageAmount').isFloat({ min: 0 }).withMessage('Valid coverage amount is required'),
+    body('premiumAmount').isFloat({ min: 0 }).withMessage('Valid premium amount is required'),
+    body('paymentFrequency').isIn(['annual', 'semi-annual', 'quarterly', 'monthly'])
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const {
+        pagodaId, startDate, endDate, coverageAmount, premiumAmount,
+        paymentFrequency, notes
+      } = req.body;
+
+      // Verify pagoda exists
+      const pagoda = await db.get('SELECT id FROM pagodas WHERE id = ?', [pagodaId]);
+      if (!pagoda) {
+        return res.status(404).json({
+          success: false,
+          message: 'Pagoda not found'
+        });
+      }
+
+      // Check for overlapping active policies
+      // ពិនិត្យមើលថាតើមានគោលនយោបាយសកម្មដែលមានរយៈពេលជាប់គ្នា
+      const existingPolicy = await db.get(`
+        SELECT id FROM insurancePolicies 
+        WHERE pagodaId = ? 
+        AND status = 'active'
+        AND (
+          (startDate <= ? AND endDate >= ?)
+          OR (startDate <= ? AND endDate >= ?)
+        )
+      `, [pagodaId, startDate, startDate, endDate, endDate]);
+
+      if (existingPolicy) {
+        return res.status(409).json({
+          success: false,
+          message: 'An active policy already exists for this period'
+        });
+      }
+
+      // Generate policy number
+      // បង្កើតលេខគោលនយោបាយ
+      const year = new Date(startDate).getFullYear();
+      const count = await db.get(
+        'SELECT COUNT(*) as count FROM insurancePolicies WHERE strftime("%Y", startDate) = ?',
+        [year.toString()]
+      );
+      const policyNumber = `POL-${year}-${String(count.count + 1).padStart(4, '0')}`;
+
+      const result = await db.run(`
+        INSERT INTO insurancePolicies (
+          policyNumber, pagodaId, startDate, endDate,
+          coverageAmount, premiumAmount, paymentFrequency,
+          status, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+      `, [
+        policyNumber, pagodaId, startDate, endDate,
+        coverageAmount, premiumAmount, paymentFrequency, notes
+      ]);
+
+      const policy = await db.get(
+        'SELECT * FROM insurancePolicies WHERE id = ?',
+        [result.lastID]
+      );
+
+      res.status(201).json({
+        success: true,
+        message: 'Policy created successfully',
+        data: policy
+      });
+    } catch (error) {
+      console.error('Error creating policy:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to create policy',
+        error: error.message
+      });
+    }
+  }
+);
+
+// PUT /api/insurance/policies/:id - Update policy (admin/staff)
+// កែប្រែគោលនយោបាយធានារ៉ាប់រង (សម្រាប់អ្នកគ្រប់គ្រង/បុគ្គលិក)
+router.put('/policies/:id',
+  authenticate,
+  isAdminOrStaff,
+  [
+    param('id').isInt().withMessage('Policy ID must be an integer'),
+    body('startDate').optional().isISO8601(),
+    body('endDate').optional().isISO8601(),
+    body('coverageAmount').optional().isFloat({ min: 0 }),
+    body('premiumAmount').optional().isFloat({ min: 0 }),
+    body('paymentFrequency').optional().isIn(['annual', 'semi-annual', 'quarterly', 'monthly']),
+    body('status').optional().isIn(['active', 'expired', 'cancelled'])
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const policy = await db.get('SELECT * FROM insurancePolicies WHERE id = ?', [id]);
+      if (!policy) {
+        return res.status(404).json({
+          success: false,
+          message: 'Policy not found'
+        });
+      }
+
+      // Build update query dynamically
+      const updates = [];
+      const values = [];
+      const allowedFields = [
+        'startDate', 'endDate', 'coverageAmount', 'premiumAmount',
+        'paymentFrequency', 'status', 'notes'
+      ];
+
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          updates.push(`${field} = ?`);
+          values.push(req.body[field]);
+        }
+      }
+
+      if (updates.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'No fields to update'
+        });
+      }
+
+      values.push(id);
+
+      await db.run(
+        `UPDATE insurancePolicies SET ${updates.join(', ')}, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+        values
+      );
+
+      const updatedPolicy = await db.get(
+        'SELECT * FROM insurancePolicies WHERE id = ?',
+        [id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Policy updated successfully',
+        data: updatedPolicy
+      });
+    } catch (error) {
+      console.error('Error updating policy:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to update policy',
+        error: error.message
+      });
+    }
+  }
+);
+
+// DELETE /api/insurance/policies/:id - Cancel policy (admin only)
+// បោះបង់គោលនយោបាយធានារ៉ាប់រង (សម្រាប់អ្នកគ្រប់គ្រងតែប៉ុណ្ណោះ)
+router.delete('/policies/:id',
+  authenticate,
+  async (req, res, next) => {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin only.'
+      });
+    }
+    next();
+  },
+  param('id').isInt().withMessage('Policy ID must be an integer'),
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const policy = await db.get('SELECT * FROM insurancePolicies WHERE id = ?', [id]);
+      if (!policy) {
+        return res.status(404).json({
+          success: false,
+          message: 'Policy not found'
+        });
+      }
+
+      // Mark as cancelled instead of deleting
+      // សម្គាល់ថាបានបោះបង់ជំនួសឱ្យការលុប
+      await db.run(
+        'UPDATE insurancePolicies SET status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?',
+        ['cancelled', id]
+      );
+
+      res.json({
+        success: true,
+        message: 'Policy cancelled successfully'
+      });
+    } catch (error) {
+      console.error('Error cancelling policy:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to cancel policy',
+        error: error.message
+      });
+    }
+  }
+);
+
+module.exports = router;
