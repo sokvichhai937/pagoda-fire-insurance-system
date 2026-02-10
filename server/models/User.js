@@ -1,7 +1,7 @@
 // User.js - User model
 // មូលមតិអ្នកប្រើប្រាស់
 
-const { promisePool } = require('../config/database');
+const { pool, sql } = require('../config/database');
 const bcrypt = require('bcrypt');
 
 class User {
@@ -12,99 +12,103 @@ class User {
     // Hash password - បំលែងពាក្យសម្ងាត់
     const hashedPassword = await bcrypt.hash(password, 10);
     
-    const sql = `
-      INSERT INTO users (username, email, password, full_name, role)
-      VALUES (?, ?, ?, ?, ?)
-    `;
+    const result = await pool.request()
+      .input('username', sql.NVarChar, username)
+      .input('email', sql.NVarChar, email)
+      .input('password', sql.NVarChar, hashedPassword)
+      .input('full_name', sql.NVarChar, full_name)
+      .input('role', sql.NVarChar, role)
+      .query(`
+        INSERT INTO users (username, email, password, full_name, role)
+        OUTPUT INSERTED.id
+        VALUES (@username, @email, @password, @full_name, @role)
+      `);
     
-    const [result] = await promisePool.execute(sql, [
-      username,
-      email,
-      hashedPassword,
-      full_name,
-      role
-    ]);
-    
-    return result.insertId;
+    return result.recordset[0].id;
   }
 
   // Find user by ID - ស្វែងរកអ្នកប្រើប្រាស់តាម ID
   static async findById(id) {
-    const sql = 'SELECT id, username, email, full_name, role, is_active, created_at FROM users WHERE id = ?';
-    const [rows] = await promisePool.execute(sql, [id]);
-    return rows[0];
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query('SELECT id, username, email, full_name, role, is_active, created_at FROM users WHERE id = @id');
+    return result.recordset[0];
   }
 
   // Find user by username - ស្វែងរកអ្នកប្រើប្រាស់តាមឈ្មោះ
   static async findByUsername(username) {
-    const sql = 'SELECT * FROM users WHERE username = ?';
-    const [rows] = await promisePool.execute(sql, [username]);
-    return rows[0];
+    const result = await pool.request()
+      .input('username', sql.NVarChar, username)
+      .query('SELECT * FROM users WHERE username = @username');
+    return result.recordset[0];
   }
 
   // Find user by email - ស្វែងរកអ្នកប្រើប្រាស់តាមអ៊ីមែល
   static async findByEmail(email) {
-    const sql = 'SELECT * FROM users WHERE email = ?';
-    const [rows] = await promisePool.execute(sql, [email]);
-    return rows[0];
+    const result = await pool.request()
+      .input('email', sql.NVarChar, email)
+      .query('SELECT * FROM users WHERE email = @email');
+    return result.recordset[0];
   }
 
   // Get all users - ទទួលបានអ្នកប្រើប្រាស់ទាំងអស់
   static async findAll(filters = {}) {
-    let sql = 'SELECT id, username, email, full_name, role, is_active, created_at FROM users WHERE 1=1';
-    const params = [];
+    let query = 'SELECT id, username, email, full_name, role, is_active, created_at FROM users WHERE 1=1';
+    const request = pool.request();
 
     if (filters.role) {
-      sql += ' AND role = ?';
-      params.push(filters.role);
+      query += ' AND role = @role';
+      request.input('role', sql.NVarChar, filters.role);
     }
 
     if (filters.is_active !== undefined) {
-      sql += ' AND is_active = ?';
-      params.push(filters.is_active);
+      query += ' AND is_active = @is_active';
+      request.input('is_active', sql.Bit, filters.is_active);
     }
 
-    sql += ' ORDER BY created_at DESC';
+    query += ' ORDER BY created_at DESC';
 
-    const [rows] = await promisePool.execute(sql, params);
-    return rows;
+    const result = await request.query(query);
+    return result.recordset;
   }
 
   // Update user - ធ្វើបច្ចុប្បន្នភាពអ្នកប្រើប្រាស់
   static async update(id, userData) {
     const { username, email, full_name, role, is_active } = userData;
     
-    const sql = `
-      UPDATE users 
-      SET username = ?, email = ?, full_name = ?, role = ?, is_active = ?
-      WHERE id = ?
-    `;
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .input('username', sql.NVarChar, username)
+      .input('email', sql.NVarChar, email)
+      .input('full_name', sql.NVarChar, full_name)
+      .input('role', sql.NVarChar, role)
+      .input('is_active', sql.Bit, is_active)
+      .query(`
+        UPDATE users 
+        SET username = @username, email = @email, full_name = @full_name, 
+            role = @role, is_active = @is_active, updated_at = GETDATE()
+        WHERE id = @id
+      `);
     
-    const [result] = await promisePool.execute(sql, [
-      username,
-      email,
-      full_name,
-      role,
-      is_active,
-      id
-    ]);
-    
-    return result.affectedRows > 0;
+    return result.rowsAffected[0] > 0;
   }
 
   // Update password - ធ្វើបច្ចុប្បន្នភាពពាក្យសម្ងាត់
   static async updatePassword(id, newPassword) {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    const sql = 'UPDATE users SET password = ? WHERE id = ?';
-    const [result] = await promisePool.execute(sql, [hashedPassword, id]);
-    return result.affectedRows > 0;
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .input('password', sql.NVarChar, hashedPassword)
+      .query('UPDATE users SET password = @password WHERE id = @id');
+    return result.rowsAffected[0] > 0;
   }
 
   // Delete user - លុបអ្នកប្រើប្រាស់
   static async delete(id) {
-    const sql = 'DELETE FROM users WHERE id = ?';
-    const [result] = await promisePool.execute(sql, [id]);
-    return result.affectedRows > 0;
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query('DELETE FROM users WHERE id = @id');
+    return result.rowsAffected[0] > 0;
   }
 
   // Verify password - ផ្ទៀងផ្ទាត់ពាក្យសម្ងាត់
@@ -114,30 +118,34 @@ class User {
 
   // Check if username exists - ពិនិត្យមើលថាតើឈ្មោះមានស្រាប់ឬអត់
   static async usernameExists(username, excludeId = null) {
-    let sql = 'SELECT id FROM users WHERE username = ?';
-    const params = [username];
+    const request = pool.request()
+      .input('username', sql.NVarChar, username);
+    
+    let query = 'SELECT id FROM users WHERE username = @username';
     
     if (excludeId) {
-      sql += ' AND id != ?';
-      params.push(excludeId);
+      query += ' AND id != @excludeId';
+      request.input('excludeId', sql.Int, excludeId);
     }
     
-    const [rows] = await promisePool.execute(sql, params);
-    return rows.length > 0;
+    const result = await request.query(query);
+    return result.recordset.length > 0;
   }
 
   // Check if email exists - ពិនិត្យមើលថាតើអ៊ីមែលមានស្រាប់ឬអត់
   static async emailExists(email, excludeId = null) {
-    let sql = 'SELECT id FROM users WHERE email = ?';
-    const params = [email];
+    const request = pool.request()
+      .input('email', sql.NVarChar, email);
+    
+    let query = 'SELECT id FROM users WHERE email = @email';
     
     if (excludeId) {
-      sql += ' AND id != ?';
-      params.push(excludeId);
+      query += ' AND id != @excludeId';
+      request.input('excludeId', sql.Int, excludeId);
     }
     
-    const [rows] = await promisePool.execute(sql, params);
-    return rows.length > 0;
+    const result = await request.query(query);
+    return result.recordset.length > 0;
   }
 }
 

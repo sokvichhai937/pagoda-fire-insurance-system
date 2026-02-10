@@ -1,7 +1,7 @@
 // Insurance.js - Insurance policy model
 // មូលមតិធានារ៉ាប់រង
 
-const { promisePool } = require('../config/database');
+const { pool, sql } = require('../config/database');
 
 class Insurance {
   // Create new insurance policy - បង្កើតគោលនយោបាយធានារ៉ាប់រងថ្មី
@@ -11,57 +11,64 @@ class Insurance {
       coverage_end, calculation_details, notes, created_by
     } = policyData;
     
-    const sql = `
+    const query = `
       INSERT INTO insurance_policies (
         pagoda_id, policy_number, premium_amount, coverage_start,
         coverage_end, calculation_details, notes, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      )
+      OUTPUT INSERTED.id
+      VALUES (@pagoda_id, @policy_number, @premium_amount, @coverage_start,
+        @coverage_end, @calculation_details, @notes, @created_by)
     `;
     
-    const [result] = await promisePool.execute(sql, [
-      pagoda_id,
-      policy_number,
-      premium_amount,
-      coverage_start,
-      coverage_end,
-      calculation_details,
-      notes,
-      created_by
-    ]);
+    const result = await pool.request()
+      .input('pagoda_id', sql.Int, pagoda_id)
+      .input('policy_number', sql.NVarChar, policy_number)
+      .input('premium_amount', sql.Decimal(10, 2), premium_amount)
+      .input('coverage_start', sql.Date, coverage_start)
+      .input('coverage_end', sql.Date, coverage_end)
+      .input('calculation_details', sql.NVarChar(sql.MAX), calculation_details)
+      .input('notes', sql.NVarChar(sql.MAX), notes)
+      .input('created_by', sql.Int, created_by)
+      .query(query);
     
-    return result.insertId;
+    return result.recordset[0].id;
   }
 
   // Find policy by ID - ស្វែងរកគោលនយោបាយតាម ID
   static async findById(id) {
-    const sql = `
+    const query = `
       SELECT i.*, p.name_km as pagoda_name, p.province,
         u.full_name as created_by_name
       FROM insurance_policies i
       LEFT JOIN pagodas p ON i.pagoda_id = p.id
       LEFT JOIN users u ON i.created_by = u.id
-      WHERE i.id = ?
+      WHERE i.id = @id
     `;
-    const [rows] = await promisePool.execute(sql, [id]);
-    return rows[0];
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query(query);
+    return result.recordset[0];
   }
 
   // Find policies by pagoda ID - ស្វែងរកគោលនយោបាយតាមវត្ត
   static async findByPagodaId(pagodaId) {
-    const sql = `
+    const query = `
       SELECT i.*, u.full_name as created_by_name
       FROM insurance_policies i
       LEFT JOIN users u ON i.created_by = u.id
-      WHERE i.pagoda_id = ?
+      WHERE i.pagoda_id = @pagodaId
       ORDER BY i.created_at DESC
     `;
-    const [rows] = await promisePool.execute(sql, [pagodaId]);
-    return rows;
+    const result = await pool.request()
+      .input('pagodaId', sql.Int, pagodaId)
+      .query(query);
+    return result.recordset;
   }
 
   // Get all policies with filters and pagination - ទទួលបានគោលនយោបាយទាំងអស់
   static async findAll(filters = {}, pagination = {}) {
-    let sql = `
+    let query = `
       SELECT i.*, p.name_km as pagoda_name, p.province,
         u.full_name as created_by_name
       FROM insurance_policies i
@@ -69,36 +76,38 @@ class Insurance {
       LEFT JOIN users u ON i.created_by = u.id
       WHERE 1=1
     `;
-    const params = [];
+    
+    const request = pool.request();
 
     // Apply filters
     if (filters.status) {
-      sql += ' AND i.status = ?';
-      params.push(filters.status);
+      query += ' AND i.status = @status';
+      request.input('status', sql.NVarChar, filters.status);
     }
 
     if (filters.pagoda_id) {
-      sql += ' AND i.pagoda_id = ?';
-      params.push(filters.pagoda_id);
+      query += ' AND i.pagoda_id = @pagoda_id';
+      request.input('pagoda_id', sql.Int, filters.pagoda_id);
     }
 
     if (filters.search) {
-      sql += ' AND (i.policy_number LIKE ? OR p.name_km LIKE ?)';
+      query += ' AND (i.policy_number LIKE @searchTerm OR p.name_km LIKE @searchTerm)';
       const searchTerm = `%${filters.search}%`;
-      params.push(searchTerm, searchTerm);
+      request.input('searchTerm', sql.NVarChar, searchTerm);
     }
 
-    sql += ' ORDER BY i.created_at DESC';
+    query += ' ORDER BY i.created_at DESC';
 
     // Pagination
     if (pagination.limit) {
       const offset = pagination.offset || 0;
-      sql += ' LIMIT ? OFFSET ?';
-      params.push(parseInt(pagination.limit), parseInt(offset));
+      query += ' OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY';
+      request.input('limit', sql.Int, parseInt(pagination.limit));
+      request.input('offset', sql.Int, parseInt(offset));
     }
 
-    const [rows] = await promisePool.execute(sql, params);
-    return rows;
+    const result = await request.query(query);
+    return result.recordset;
   }
 
   // Update policy - ធ្វើបច្ចុប្បន្នភាពគោលនយោបាយ
@@ -108,64 +117,71 @@ class Insurance {
       calculation_details, notes
     } = policyData;
     
-    const sql = `
+    const query = `
       UPDATE insurance_policies SET
-        premium_amount = ?, coverage_start = ?, coverage_end = ?,
-        calculation_details = ?, notes = ?
-      WHERE id = ?
+        premium_amount = @premium_amount, coverage_start = @coverage_start, coverage_end = @coverage_end,
+        calculation_details = @calculation_details, notes = @notes
+      WHERE id = @id
     `;
     
-    const [result] = await promisePool.execute(sql, [
-      premium_amount,
-      coverage_start,
-      coverage_end,
-      calculation_details,
-      notes,
-      id
-    ]);
+    const result = await pool.request()
+      .input('premium_amount', sql.Decimal(10, 2), premium_amount)
+      .input('coverage_start', sql.Date, coverage_start)
+      .input('coverage_end', sql.Date, coverage_end)
+      .input('calculation_details', sql.NVarChar(sql.MAX), calculation_details)
+      .input('notes', sql.NVarChar(sql.MAX), notes)
+      .input('id', sql.Int, id)
+      .query(query);
     
-    return result.affectedRows > 0;
+    return result.rowsAffected[0] > 0;
   }
 
   // Update policy status - ធ្វើបច្ចុប្បន្នភាពស្ថានភាពគោលនយោបាយ
   static async updateStatus(id, status) {
-    const sql = 'UPDATE insurance_policies SET status = ? WHERE id = ?';
-    const [result] = await promisePool.execute(sql, [status, id]);
-    return result.affectedRows > 0;
+    const query = 'UPDATE insurance_policies SET status = @status WHERE id = @id';
+    const result = await pool.request()
+      .input('status', sql.NVarChar, status)
+      .input('id', sql.Int, id)
+      .query(query);
+    return result.rowsAffected[0] > 0;
   }
 
   // Delete policy - លុបគោលនយោបាយ
   static async delete(id) {
-    const sql = 'DELETE FROM insurance_policies WHERE id = ?';
-    const [result] = await promisePool.execute(sql, [id]);
-    return result.affectedRows > 0;
+    const query = 'DELETE FROM insurance_policies WHERE id = @id';
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query(query);
+    return result.rowsAffected[0] > 0;
   }
 
   // Get active policies - ទទួលបានគោលនយោបាយសកម្ម
   static async getActivePolicies() {
-    const sql = `
+    const query = `
       SELECT i.*, p.name_km as pagoda_name, p.province
       FROM insurance_policies i
       LEFT JOIN pagodas p ON i.pagoda_id = p.id
       WHERE i.status = 'active'
       ORDER BY i.coverage_end ASC
     `;
-    const [rows] = await promisePool.execute(sql);
-    return rows;
+    const result = await pool.request().query(query);
+    return result.recordset;
   }
 
   // Get expiring policies - ទទួលបានគោលនយោបាយដែលហួសកំណត់
   static async getExpiringPolicies(days = 30) {
-    const sql = `
+    const query = `
       SELECT i.*, p.name_km as pagoda_name, p.province
       FROM insurance_policies i
       LEFT JOIN pagodas p ON i.pagoda_id = p.id
       WHERE i.status = 'active'
-        AND i.coverage_end <= DATE_ADD(CURDATE(), INTERVAL ? DAY)
+        AND i.coverage_end <= DATEADD(DAY, @days, CAST(GETDATE() AS DATE))
       ORDER BY i.coverage_end ASC
     `;
-    const [rows] = await promisePool.execute(sql, [days]);
-    return rows;
+    const result = await pool.request()
+      .input('days', sql.Int, days)
+      .query(query);
+    return result.recordset;
   }
 
   // Generate policy number - បង្កើតលេខគោលនយោបាយ
@@ -173,21 +189,22 @@ class Insurance {
     const year = new Date().getFullYear();
     const prefix = `POL-${year}-`;
     
-    const sql = `
-      SELECT policy_number
+    const query = `
+      SELECT TOP 1 policy_number
       FROM insurance_policies
-      WHERE policy_number LIKE ?
+      WHERE policy_number LIKE @prefix
       ORDER BY policy_number DESC
-      LIMIT 1
     `;
     
-    const [rows] = await promisePool.execute(sql, [`${prefix}%`]);
+    const result = await pool.request()
+      .input('prefix', sql.NVarChar, `${prefix}%`)
+      .query(query);
     
-    if (rows.length === 0) {
+    if (result.recordset.length === 0) {
       return `${prefix}0001`;
     }
     
-    const lastNumber = rows[0].policy_number;
+    const lastNumber = result.recordset[0].policy_number;
     const lastSequence = parseInt(lastNumber.split('-')[2]);
     const newSequence = (lastSequence + 1).toString().padStart(4, '0');
     
