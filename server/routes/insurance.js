@@ -97,7 +97,7 @@ router.get('/policies',
         params.push(province);
       }
       if (search) {
-        conditions.push('(ip.policyNumber LIKE ? OR p.name LIKE ? OR p.nameKhmer LIKE ?)');
+        conditions.push('(ip.policy_number LIKE ? OR p.name LIKE ? OR p.name_khmer LIKE ?)');
         const searchPattern = `%${search}%`;
         params.push(searchPattern, searchPattern, searchPattern);
       }
@@ -107,8 +107,8 @@ router.get('/policies',
       // Get total count
       const countResult = await db.get(`
         SELECT COUNT(*) as total 
-        FROM insurancePolicies ip
-        JOIN pagodas p ON ip.pagodaId = p.id
+        FROM insurance_policies ip
+        JOIN pagodas p ON ip.pagoda_id = p.id
         ${whereClause}
       `, params);
 
@@ -116,16 +116,16 @@ router.get('/policies',
       const policies = await db.all(`
         SELECT 
           ip.*,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer,
+          p.name as pagoda_name,
+          p.name_khmer as pagoda_name_khmer,
           p.province,
-          (SELECT SUM(amount) FROM payments WHERE policyId = ip.id) as totalPaid
-        FROM insurancePolicies ip
-        JOIN pagodas p ON ip.pagodaId = p.id
+          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as total_paid
+        FROM insurance_policies ip
+        JOIN pagodas p ON ip.pagoda_id = p.id
         ${whereClause}
-        ORDER BY ip.createdAt DESC
-        LIMIT ? OFFSET ?
-      `, [...params, limit, offset]);
+        ORDER BY ip.created_at DESC
+        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+      `, [...params, offset, limit]);
 
       res.json({
         success: true,
@@ -164,15 +164,15 @@ router.get('/policies/:id',
       const policy = await db.get(`
         SELECT 
           ip.*,
-          p.name as pagodaName,
-          p.nameKhmer as pagodaNameKhmer,
+          p.name as pagoda_name,
+          p.name_khmer as pagoda_name_khmer,
           p.province,
           p.district,
           p.address,
-          (SELECT SUM(amount) FROM payments WHERE policyId = ip.id) as totalPaid,
-          (SELECT COUNT(*) FROM payments WHERE policyId = ip.id) as paymentCount
-        FROM insurancePolicies ip
-        JOIN pagodas p ON ip.pagodaId = p.id
+          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as total_paid,
+          (SELECT COUNT(*) FROM payments WHERE policy_id = ip.id) as payment_count
+        FROM insurance_policies ip
+        JOIN pagodas p ON ip.pagoda_id = p.id
         WHERE ip.id = ?
       `, [id]);
 
@@ -185,13 +185,13 @@ router.get('/policies/:id',
 
       // Get buildings covered by this policy
       const buildings = await db.all(
-        'SELECT * FROM buildings WHERE pagodaId = ?',
-        [policy.pagodaId]
+        'SELECT * FROM buildings WHERE pagoda_id = ?',
+        [policy.pagoda_id]
       );
 
       // Get payment history
       const payments = await db.all(
-        'SELECT * FROM payments WHERE policyId = ? ORDER BY paymentDate DESC',
+        'SELECT * FROM payments WHERE policy_id = ? ORDER BY payment_date DESC',
         [id]
       );
 
@@ -248,12 +248,12 @@ router.post('/policies',
       // Check for overlapping active policies
       // ពិនិត្យមើលថាតើមានគោលនយោបាយសកម្មដែលមានរយៈពេលជាប់គ្នា
       const existingPolicy = await db.get(`
-        SELECT id FROM insurancePolicies 
-        WHERE pagodaId = ? 
+        SELECT id FROM insurance_policies 
+        WHERE pagoda_id = ? 
         AND status = 'active'
         AND (
-          (startDate <= ? AND endDate >= ?)
-          OR (startDate <= ? AND endDate >= ?)
+          (start_date <= ? AND end_date >= ?)
+          OR (start_date <= ? AND end_date >= ?)
         )
       `, [pagodaId, startDate, startDate, endDate, endDate]);
 
@@ -268,15 +268,15 @@ router.post('/policies',
       // បង្កើតលេខគោលនយោបាយ
       const year = new Date(startDate).getFullYear();
       const count = await db.get(
-        'SELECT COUNT(*) as count FROM insurancePolicies WHERE strftime("%Y", startDate) = ?',
-        [year.toString()]
+        'SELECT COUNT(*) as count FROM insurance_policies WHERE YEAR(start_date) = ?',
+        [year]
       );
       const policyNumber = `POL-${year}-${String(count.count + 1).padStart(4, '0')}`;
 
       const result = await db.run(`
-        INSERT INTO insurancePolicies (
-          policyNumber, pagodaId, startDate, endDate,
-          coverageAmount, premiumAmount, paymentFrequency,
+        INSERT INTO insurance_policies (
+          policy_number, pagoda_id, start_date, end_date,
+          coverage_amount, premium_amount, payment_frequency,
           status, notes
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
       `, [
@@ -285,7 +285,7 @@ router.post('/policies',
       ]);
 
       const policy = await db.get(
-        'SELECT * FROM insurancePolicies WHERE id = ?',
+        'SELECT * FROM insurance_policies WHERE id = ?',
         [result.lastID]
       );
 
@@ -324,7 +324,7 @@ router.put('/policies/:id',
     try {
       const { id } = req.params;
 
-      const policy = await db.get('SELECT * FROM insurancePolicies WHERE id = ?', [id]);
+      const policy = await db.get('SELECT * FROM insurance_policies WHERE id = ?', [id]);
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -335,15 +335,20 @@ router.put('/policies/:id',
       // Build update query dynamically
       const updates = [];
       const values = [];
-      const allowedFields = [
-        'startDate', 'endDate', 'coverageAmount', 'premiumAmount',
-        'paymentFrequency', 'status', 'notes'
-      ];
+      const fieldMapping = {
+        'startDate': 'start_date',
+        'endDate': 'end_date',
+        'coverageAmount': 'coverage_amount',
+        'premiumAmount': 'premium_amount',
+        'paymentFrequency': 'payment_frequency',
+        'status': 'status',
+        'notes': 'notes'
+      };
 
-      for (const field of allowedFields) {
-        if (req.body[field] !== undefined) {
-          updates.push(`${field} = ?`);
-          values.push(req.body[field]);
+      for (const [camelField, snakeField] of Object.entries(fieldMapping)) {
+        if (req.body[camelField] !== undefined) {
+          updates.push(`${snakeField} = ?`);
+          values.push(req.body[camelField]);
         }
       }
 
@@ -357,12 +362,12 @@ router.put('/policies/:id',
       values.push(id);
 
       await db.run(
-        `UPDATE insurancePolicies SET ${updates.join(', ')}, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+        `UPDATE insurance_policies SET ${updates.join(', ')}, updated_at = GETDATE() WHERE id = ?`,
         values
       );
 
       const updatedPolicy = await db.get(
-        'SELECT * FROM insurancePolicies WHERE id = ?',
+        'SELECT * FROM insurance_policies WHERE id = ?',
         [id]
       );
 
@@ -401,7 +406,7 @@ router.delete('/policies/:id',
     try {
       const { id } = req.params;
 
-      const policy = await db.get('SELECT * FROM insurancePolicies WHERE id = ?', [id]);
+      const policy = await db.get('SELECT * FROM insurance_policies WHERE id = ?', [id]);
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -412,7 +417,7 @@ router.delete('/policies/:id',
       // Mark as cancelled instead of deleting
       // សម្គាល់ថាបានបោះបង់ជំនួសឱ្យការលុប
       await db.run(
-        'UPDATE insurancePolicies SET status = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?',
+        'UPDATE insurance_policies SET status = ?, updated_at = GETDATE() WHERE id = ?',
         ['cancelled', id]
       );
 
