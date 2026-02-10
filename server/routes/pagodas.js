@@ -4,7 +4,10 @@
 const express = require('express');
 const router = express.Router();
 const { body, param, query, validationResult } = require('express-validator');
-const db = require('../database/db');
+const Pagoda = require('../models/Pagoda');
+const Monk = require('../models/Monk');
+const Building = require('../models/Building');
+const Insurance = require('../models/Insurance');
 const { authenticate, isAdminOrStaff } = require('../middleware/auth');
 
 // Helper function to handle validation errors
@@ -29,7 +32,7 @@ router.get('/',
     query('page').optional().isInt({ min: 1 }).withMessage('Page must be positive integer'),
     query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be 1-100'),
     query('province').optional().trim(),
-    query('type').optional().isIn(['city', 'rural', 'forest']),
+    query('type').optional().isIn(['dhammayut', 'mahanikay']),
     query('size').optional().isIn(['small', 'medium', 'large']),
     query('search').optional().trim()
   ],
@@ -41,47 +44,18 @@ router.get('/',
       const offset = (page - 1) * limit;
       const { province, type, size, search } = req.query;
 
-      // Build WHERE clause
-      const conditions = [];
-      const params = [];
-
-      if (province) {
-        conditions.push('province = ?');
-        params.push(province);
-      }
-      if (type) {
-        conditions.push('type = ?');
-        params.push(type);
-      }
-      if (size) {
-        conditions.push('size = ?');
-        params.push(size);
-      }
-      if (search) {
-        conditions.push('(name LIKE ? OR nameKhmer LIKE ? OR address LIKE ?)');
-        const searchPattern = `%${search}%`;
-        params.push(searchPattern, searchPattern, searchPattern);
-      }
-
-      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      // Build filters object
+      const filters = {};
+      if (province) filters.province = province;
+      if (type) filters.type = type;
+      if (size) filters.size = size;
+      if (search) filters.search = search;
 
       // Get total count
-      const countResult = await db.get(
-        `SELECT COUNT(*) as total FROM pagodas ${whereClause}`,
-        params
-      );
+      const total = await Pagoda.count(filters);
 
-      // Get pagodas
-      const pagodas = await db.all(`
-        SELECT 
-          p.*,
-          (SELECT COUNT(*) FROM monks WHERE pagodaId = p.id) as monkCount,
-          (SELECT COUNT(*) FROM buildings WHERE pagodaId = p.id) as buildingCount
-        FROM pagodas p
-        ${whereClause}
-        ORDER BY p.createdAt DESC
-        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-      `, [...params, offset, limit]);
+      // Get pagodas (with monk_count and building_count included)
+      const pagodas = await Pagoda.findAll(filters, { offset, limit });
 
       res.json({
         success: true,
@@ -89,10 +63,10 @@ router.get('/',
         data: {
           pagodas,
           pagination: {
-            total: countResult.total,
+            total,
             page,
             limit,
-            totalPages: Math.ceil(countResult.total / limit)
+            totalPages: Math.ceil(total / limit)
           }
         }
       });
@@ -117,7 +91,7 @@ router.get('/:id',
     try {
       const { id } = req.params;
 
-      const pagoda = await db.get('SELECT * FROM pagodas WHERE id = ?', [id]);
+      const pagoda = await Pagoda.findById(id);
 
       if (!pagoda) {
         return res.status(404).json({
@@ -127,27 +101,18 @@ router.get('/:id',
       }
 
       // Get related counts
-      const monkCount = await db.get(
-        'SELECT COUNT(*) as count FROM monks WHERE pagodaId = ?',
-        [id]
-      );
-      const buildingCount = await db.get(
-        'SELECT COUNT(*) as count FROM buildings WHERE pagodaId = ?',
-        [id]
-      );
-      const policyCount = await db.get(
-        'SELECT COUNT(*) as count FROM insurancePolicies WHERE pagodaId = ?',
-        [id]
-      );
+      const monks = await Monk.findByPagodaId(id);
+      const buildings = await Building.findByPagodaId(id);
+      const policies = await Insurance.findByPagodaId(id);
 
       res.json({
         success: true,
         message: 'Pagoda retrieved successfully',
         data: {
           ...pagoda,
-          monkCount: monkCount.count,
-          buildingCount: buildingCount.count,
-          policyCount: policyCount.count
+          monkCount: monks.length,
+          buildingCount: buildings.length,
+          policyCount: policies.length
         }
       });
     } catch (error) {
@@ -167,44 +132,50 @@ router.post('/',
   authenticate,
   isAdminOrStaff,
   [
-    body('name').trim().notEmpty().withMessage('Pagoda name is required'),
-    body('nameKhmer').trim().notEmpty().withMessage('Khmer name is required'),
+    body('nameEn').trim().notEmpty().withMessage('English name is required'),
+    body('nameKm').trim().notEmpty().withMessage('Khmer name is required'),
     body('province').trim().notEmpty().withMessage('Province is required'),
     body('district').trim().notEmpty().withMessage('District is required'),
     body('commune').trim().notEmpty().withMessage('Commune is required'),
     body('village').trim().notEmpty().withMessage('Village is required'),
-    body('address').trim().notEmpty().withMessage('Address is required'),
-    body('type').isIn(['city', 'rural', 'forest']).withMessage('Invalid pagoda type'),
+    body('type').isIn(['dhammayut', 'mahanikay']).withMessage('Invalid pagoda type'),
     body('size').isIn(['small', 'medium', 'large']).withMessage('Invalid pagoda size'),
-    body('chiefMonkName').trim().notEmpty().withMessage('Chief monk name is required'),
-    body('chiefMonkPhone').optional().trim(),
-    body('contactPerson').optional().trim(),
-    body('contactPhone').optional().trim(),
+    body('phone').optional().trim(),
+    body('email').optional().trim().isEmail(),
     body('latitude').optional().isFloat({ min: -90, max: 90 }),
-    body('longitude').optional().isFloat({ min: -180, max: 180 })
+    body('longitude').optional().isFloat({ min: -180, max: 180 }),
+    body('photoUrl').optional().trim(),
+    body('notes').optional().trim()
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const {
-        name, nameKhmer, province, district, commune, village,
-        address, type, size, chiefMonkName, chiefMonkPhone,
-        contactPerson, contactPhone, latitude, longitude, notes
+        nameEn, nameKm, province, district, commune, village,
+        type, size, phone, email, latitude, longitude, photoUrl, notes
       } = req.body;
 
-      const result = await db.run(`
-        INSERT INTO pagodas (
-          name, nameKhmer, province, district, commune, village,
-          address, type, size, chiefMonkName, chiefMonkPhone,
-          contactPerson, contactPhone, latitude, longitude, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
-        name, nameKhmer, province, district, commune, village,
-        address, type, size, chiefMonkName, chiefMonkPhone,
-        contactPerson, contactPhone, latitude, longitude, notes
-      ]);
+      // Map camelCase to snake_case
+      const pagodaData = {
+        name_en: nameEn,
+        name_km: nameKm,
+        province,
+        district,
+        commune,
+        village,
+        type,
+        size,
+        phone,
+        email,
+        latitude,
+        longitude,
+        photo_url: photoUrl,
+        notes,
+        created_by: req.user.id
+      };
 
-      const pagoda = await db.get('SELECT * FROM pagodas WHERE id = ?', [result.lastID]);
+      const pagodaId = await Pagoda.create(pagodaData);
+      const pagoda = await Pagoda.findById(pagodaId);
 
       res.status(201).json({
         success: true,
@@ -229,28 +200,27 @@ router.put('/:id',
   isAdminOrStaff,
   [
     param('id').isInt().withMessage('Pagoda ID must be an integer'),
-    body('name').optional().trim().notEmpty(),
-    body('nameKhmer').optional().trim().notEmpty(),
+    body('nameEn').optional().trim().notEmpty(),
+    body('nameKm').optional().trim().notEmpty(),
     body('province').optional().trim().notEmpty(),
     body('district').optional().trim().notEmpty(),
     body('commune').optional().trim().notEmpty(),
     body('village').optional().trim().notEmpty(),
-    body('address').optional().trim().notEmpty(),
-    body('type').optional().isIn(['city', 'rural', 'forest']),
+    body('type').optional().isIn(['dhammayut', 'mahanikay']),
     body('size').optional().isIn(['small', 'medium', 'large']),
-    body('chiefMonkName').optional().trim().notEmpty(),
-    body('chiefMonkPhone').optional().trim(),
-    body('contactPerson').optional().trim(),
-    body('contactPhone').optional().trim(),
+    body('phone').optional().trim(),
+    body('email').optional().trim().isEmail(),
     body('latitude').optional().isFloat({ min: -90, max: 90 }),
-    body('longitude').optional().isFloat({ min: -180, max: 180 })
+    body('longitude').optional().isFloat({ min: -180, max: 180 }),
+    body('photoUrl').optional().trim(),
+    body('notes').optional().trim()
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const { id } = req.params;
 
-      const pagoda = await db.get('SELECT id FROM pagodas WHERE id = ?', [id]);
+      const pagoda = await Pagoda.findById(id);
       if (!pagoda) {
         return res.status(404).json({
           success: false,
@@ -258,37 +228,39 @@ router.put('/:id',
         });
       }
 
-      // Build update query dynamically
-      const updates = [];
-      const values = [];
-      const allowedFields = [
-        'name', 'nameKhmer', 'province', 'district', 'commune', 'village',
-        'address', 'type', 'size', 'chiefMonkName', 'chiefMonkPhone',
-        'contactPerson', 'contactPhone', 'latitude', 'longitude', 'notes'
-      ];
+      // Map camelCase to snake_case and merge with existing data
+      const updateData = {
+        name_en: req.body.nameEn !== undefined ? req.body.nameEn : pagoda.name_en,
+        name_km: req.body.nameKm !== undefined ? req.body.nameKm : pagoda.name_km,
+        province: req.body.province !== undefined ? req.body.province : pagoda.province,
+        district: req.body.district !== undefined ? req.body.district : pagoda.district,
+        commune: req.body.commune !== undefined ? req.body.commune : pagoda.commune,
+        village: req.body.village !== undefined ? req.body.village : pagoda.village,
+        type: req.body.type !== undefined ? req.body.type : pagoda.type,
+        size: req.body.size !== undefined ? req.body.size : pagoda.size,
+        phone: req.body.phone !== undefined ? req.body.phone : pagoda.phone,
+        email: req.body.email !== undefined ? req.body.email : pagoda.email,
+        latitude: req.body.latitude !== undefined ? req.body.latitude : pagoda.latitude,
+        longitude: req.body.longitude !== undefined ? req.body.longitude : pagoda.longitude,
+        photo_url: req.body.photoUrl !== undefined ? req.body.photoUrl : pagoda.photo_url,
+        notes: req.body.notes !== undefined ? req.body.notes : pagoda.notes
+      };
 
-      for (const field of allowedFields) {
-        if (req.body[field] !== undefined) {
-          updates.push(`${field} = ?`);
-          values.push(req.body[field]);
-        }
-      }
+      // Check if any field is being updated
+      const hasChanges = Object.keys(req.body).some(key => 
+        ['nameEn', 'nameKm', 'province', 'district', 'commune', 'village', 
+         'type', 'size', 'phone', 'email', 'latitude', 'longitude', 'photoUrl', 'notes'].includes(key)
+      );
 
-      if (updates.length === 0) {
+      if (!hasChanges) {
         return res.status(400).json({
           success: false,
           message: 'No fields to update'
         });
       }
 
-      values.push(id);
-
-      await db.run(
-        `UPDATE pagodas SET ${updates.join(', ')}, updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
-        values
-      );
-
-      const updatedPagoda = await db.get('SELECT * FROM pagodas WHERE id = ?', [id]);
+      await Pagoda.update(id, updateData);
+      const updatedPagoda = await Pagoda.findById(id);
 
       res.json({
         success: true,
@@ -325,7 +297,7 @@ router.delete('/:id',
     try {
       const { id } = req.params;
 
-      const pagoda = await db.get('SELECT id FROM pagodas WHERE id = ?', [id]);
+      const pagoda = await Pagoda.findById(id);
       if (!pagoda) {
         return res.status(404).json({
           success: false,
@@ -335,10 +307,8 @@ router.delete('/:id',
 
       // Check for active policies
       // ពិនិត្យមើលថាតើមានគោលនយោបាយធានារ៉ាប់រងសកម្ម
-      const activePolicy = await db.get(
-        'SELECT id FROM insurancePolicies WHERE pagodaId = ? AND status = ?',
-        [id, 'active']
-      );
+      const policies = await Insurance.findByPagodaId(id);
+      const activePolicy = policies.find(p => p.status === 'active');
 
       if (activePolicy) {
         return res.status(400).json({
@@ -347,7 +317,7 @@ router.delete('/:id',
         });
       }
 
-      await db.run('DELETE FROM pagodas WHERE id = ?', [id]);
+      await Pagoda.delete(id);
 
       res.json({
         success: true,
@@ -374,7 +344,7 @@ router.get('/:id/monks',
     try {
       const { id } = req.params;
 
-      const pagoda = await db.get('SELECT id FROM pagodas WHERE id = ?', [id]);
+      const pagoda = await Pagoda.findById(id);
       if (!pagoda) {
         return res.status(404).json({
           success: false,
@@ -382,10 +352,7 @@ router.get('/:id/monks',
         });
       }
 
-      const monks = await db.all(
-        'SELECT * FROM monks WHERE pagodaId = ? ORDER BY ordinationDate DESC',
-        [id]
-      );
+      const monks = await Monk.findByPagodaId(id);
 
       res.json({
         success: true,
@@ -413,7 +380,7 @@ router.get('/:id/buildings',
     try {
       const { id } = req.params;
 
-      const pagoda = await db.get('SELECT id FROM pagodas WHERE id = ?', [id]);
+      const pagoda = await Pagoda.findById(id);
       if (!pagoda) {
         return res.status(404).json({
           success: false,
@@ -421,10 +388,7 @@ router.get('/:id/buildings',
         });
       }
 
-      const buildings = await db.all(
-        'SELECT * FROM buildings WHERE pagodaId = ? ORDER BY buildingType, name',
-        [id]
-      );
+      const buildings = await Building.findByPagodaId(id);
 
       res.json({
         success: true,
@@ -452,7 +416,7 @@ router.get('/:id/policies',
     try {
       const { id } = req.params;
 
-      const pagoda = await db.get('SELECT id FROM pagodas WHERE id = ?', [id]);
+      const pagoda = await Pagoda.findById(id);
       if (!pagoda) {
         return res.status(404).json({
           success: false,
@@ -460,10 +424,7 @@ router.get('/:id/policies',
         });
       }
 
-      const policies = await db.all(
-        'SELECT * FROM insurancePolicies WHERE pagodaId = ? ORDER BY startDate DESC',
-        [id]
-      );
+      const policies = await Insurance.findByPagodaId(id);
 
       res.json({
         success: true,
