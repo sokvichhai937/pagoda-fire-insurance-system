@@ -4,8 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const { body, param, validationResult } = require('express-validator');
-const bcrypt = require('bcrypt');
-const db = require('../database/db');
+const User = require('../models/User');
 const { authenticate, isAdmin } = require('../middleware/auth');
 
 // Helper function to handle validation errors
@@ -26,11 +25,7 @@ const handleValidationErrors = (req, res, next) => {
 // យកបញ្ជីអ្នកប្រើប្រាស់ទាំងអស់ (សម្រាប់អ្នកគ្រប់គ្រងតែប៉ុណ្ណោះ)
 router.get('/', authenticate, isAdmin, async (req, res) => {
   try {
-    const users = await db.all(`
-      SELECT id, username, full_name, email, role, is_active, created_at
-      FROM users
-      ORDER BY created_at DESC
-    `);
+    const users = await User.findAll();
 
     res.json({
       success: true,
@@ -66,11 +61,7 @@ router.get('/:id',
         });
       }
 
-      const user = await db.get(`
-        SELECT id, username, full_name, email, role, is_active, created_at
-        FROM users
-        WHERE id = ?
-      `, [id]);
+      const user = await User.findById(id);
 
       if (!user) {
         return res.status(404).json({
@@ -114,32 +105,30 @@ router.post('/',
 
       // Check if username or email already exists
       // ពិនិត្យថាតើឈ្មោះអ្នកប្រើ ឬអ៊ីមែលមានរួចហើយឬនៅ
-      const existingUser = await db.get(
-        'SELECT id FROM users WHERE username = ? OR email = ?',
-        [username, email]
-      );
+      const usernameExists = await User.usernameExists(username);
+      const emailExists = await User.emailExists(email);
 
-      if (existingUser) {
+      if (usernameExists || emailExists) {
         return res.status(409).json({
           success: false,
           message: 'Username or email already exists'
         });
       }
 
-      // Hash password
-      const hashedPassword = await bcrypt.hash(password, 10);
-
-      // Insert new user
-      const result = await db.run(`
-        INSERT INTO users (username, password, full_name, email, role)
-        VALUES (?, ?, ?, ?, ?)
-      `, [username, hashedPassword, fullName, email, role]);
+      // Create new user
+      const userId = await User.create({
+        username,
+        password,
+        full_name: fullName,
+        email,
+        role
+      });
 
       res.status(201).json({
         success: true,
         message: 'User created successfully',
         data: {
-          id: result.lastID,
+          id: userId,
           username,
           full_name: fullName,
           email,
@@ -176,7 +165,7 @@ router.put('/:id',
       const { username, fullName, email, role } = req.body;
 
       // Check if user exists
-      const user = await db.get('SELECT id FROM users WHERE id = ?', [id]);
+      const user = await User.findById(id);
       if (!user) {
         return res.status(404).json({
           success: false,
@@ -185,59 +174,38 @@ router.put('/:id',
       }
 
       // Check if username or email already exists for another user
-      if (username || email) {
-        const existingUser = await db.get(
-          'SELECT id FROM users WHERE (username = ? OR email = ?) AND id != ?',
-          [username || '', email || '', id]
-        );
-
-        if (existingUser) {
+      if (username) {
+        const usernameExists = await User.usernameExists(username, id);
+        if (usernameExists) {
           return res.status(409).json({
             success: false,
-            message: 'Username or email already exists'
+            message: 'Username already exists'
+          });
+        }
+      }
+      
+      if (email) {
+        const emailExists = await User.emailExists(email, id);
+        if (emailExists) {
+          return res.status(409).json({
+            success: false,
+            message: 'Email already exists'
           });
         }
       }
 
-      // Build update query dynamically
-      const updates = [];
-      const values = [];
+      // Prepare update data
+      const updateData = {
+        username: username || user.username,
+        email: email || user.email,
+        full_name: fullName || user.full_name,
+        role: role || user.role,
+        is_active: user.is_active
+      };
 
-      if (username) {
-        updates.push('username = ?');
-        values.push(username);
-      }
-      if (fullName) {
-        updates.push('full_name = ?');
-        values.push(fullName);
-      }
-      if (email) {
-        updates.push('email = ?');
-        values.push(email);
-      }
-      if (role) {
-        updates.push('role = ?');
-        values.push(role);
-      }
+      await User.update(id, updateData);
 
-      if (updates.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'No fields to update'
-        });
-      }
-
-      values.push(id);
-
-      await db.run(
-        `UPDATE users SET ${updates.join(', ')} WHERE id = ?`,
-        values
-      );
-
-      const updatedUser = await db.get(`
-        SELECT id, username, full_name, email, role, is_active, created_at
-        FROM users WHERE id = ?
-      `, [id]);
+      const updatedUser = await User.findById(id);
 
       res.json({
         success: true,
@@ -275,7 +243,7 @@ router.delete('/:id',
         });
       }
 
-      const user = await db.get('SELECT id FROM users WHERE id = ?', [id]);
+      const user = await User.findById(id);
       if (!user) {
         return res.status(404).json({
           success: false,
@@ -283,7 +251,7 @@ router.delete('/:id',
         });
       }
 
-      await db.run('DELETE FROM users WHERE id = ?', [id]);
+      await User.delete(id);
 
       res.json({
         success: true,
@@ -326,7 +294,7 @@ router.put('/:id/password',
         });
       }
 
-      const user = await db.get('SELECT id, password FROM users WHERE id = ?', [id]);
+      const user = await User.findByUsername(req.user.username);
       if (!user) {
         return res.status(404).json({
           success: false,
@@ -337,7 +305,7 @@ router.put('/:id/password',
       // Verify current password if user is changing their own password
       // ផ្ទៀងផ្ទាត់ពាក្យសម្ងាត់បច្ចុប្បន្ន ប្រសិនបើអ្នកប្រើប្រាស់កំពុងប្តូរពាក្យសម្ងាត់ផ្ទាល់ខ្លួន
       if (isOwnPassword) {
-        const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+        const isValidPassword = await User.verifyPassword(currentPassword, user.password);
         if (!isValidPassword) {
           return res.status(401).json({
             success: false,
@@ -346,9 +314,8 @@ router.put('/:id/password',
         }
       }
 
-      // Hash and update new password
-      const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await db.run('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, id]);
+      // Update new password
+      await User.updatePassword(id, newPassword);
 
       res.json({
         success: true,
