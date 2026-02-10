@@ -53,9 +53,8 @@ router.get('/',
       // Get payments with pagination
       const payments = await Payment.findAll(filters, { limit, offset });
       
-      // Get total count (reuse findAll without pagination)
-      const allPayments = await Payment.findAll(filters);
-      const total = allPayments.length;
+      // Get total count
+      const total = await Payment.count(filters);
 
       res.json({
         success: true,
