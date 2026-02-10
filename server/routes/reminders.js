@@ -169,6 +169,9 @@ router.post('/send',
 
       // Create reminder with status 'sent'
       // Map sendMethod to schema-compliant reminder_type
+      // NOTE: Schema only supports 'email', 'sms', 'both'. 
+      // For backward compatibility, 'phone' and 'letter' are mapped to 'sms'
+      // TODO: Consider extending schema to support additional reminder types
       let dbReminderType = sendMethod;
       if (sendMethod === 'phone' || sendMethod === 'letter') {
         dbReminderType = 'sms';

@@ -294,7 +294,7 @@ router.put('/:id/password',
         });
       }
 
-      const user = await User.findByUsername(req.user.username);
+      const user = await User.findById(id);
       if (!user) {
         return res.status(404).json({
           success: false,

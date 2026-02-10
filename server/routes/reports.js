@@ -84,6 +84,7 @@ router.get('/monthly',
           FROM insurance_policies ip
           JOIN pagodas p ON ip.pagoda_id = p.id
           WHERE FORMAT(ip.created_at, 'yyyy-MM') = @month
+            AND ip.status = 'active'
           ORDER BY ip.created_at
         `);
       const newPolicies = newPoliciesResult.recordset;
