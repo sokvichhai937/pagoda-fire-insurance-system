@@ -4,8 +4,10 @@
 const express = require('express');
 const router = express.Router();
 const { body, param, query, validationResult } = require('express-validator');
+const { pool, sql } = require('../config/database');
 const Insurance = require('../models/Insurance');
 const Pagoda = require('../models/Pagoda');
+const Building = require('../models/Building');
 const { authenticate, isAdminOrStaff } = require('../middleware/auth');
 const insuranceCalculator = require('../utils/insuranceCalculator');
 
@@ -92,7 +94,6 @@ router.get('/policies',
       if (search) filters.search = search;
 
       // Get total count
-      const { pool, sql } = require('../config/database');
       let countQuery = `
         SELECT COUNT(*) as total 
         FROM insurance_policies i
@@ -164,11 +165,7 @@ router.get('/policies/:id',
       }
 
       // Get buildings and payments for this policy
-      const { pool, sql } = require('../config/database');
-      
-      const buildingsResult = await pool.request()
-        .input('pagoda_id', sql.Int, policy.pagoda_id)
-        .query('SELECT * FROM buildings WHERE pagoda_id = @pagoda_id');
+      const buildings = await Building.findByPagodaId(policy.pagoda_id);
       
       const paymentsResult = await pool.request()
         .input('policy_id', sql.Int, id)
@@ -179,7 +176,7 @@ router.get('/policies/:id',
         message: 'Policy retrieved successfully',
         data: {
           ...policy,
-          buildings: buildingsResult.recordset,
+          buildings,
           payments: paymentsResult.recordset
         }
       });
@@ -226,7 +223,6 @@ router.post('/policies',
 
       // Check for overlapping active policies
       // ពិនិត្យមើលថាតើមានគោលនយោបាយសកម្មដែលមានរយៈពេលជាប់គ្នា
-      const { pool, sql } = require('../config/database');
       const existingPolicyResult = await pool.request()
         .input('pagoda_id', sql.Int, pagodaId)
         .input('start_date', sql.Date, startDate)
