@@ -14,10 +14,12 @@ async function all(query, params = []) {
   
   // Convert ? placeholders to @param1, @param2, etc.
   let mssqlQuery = query;
-  params.forEach((param, index) => {
-    const paramName = `param${index + 1}`;
-    mssqlQuery = mssqlQuery.replace('?', `@${paramName}`);
-    request.input(paramName, param);
+  let paramIndex = 0;
+  mssqlQuery = mssqlQuery.replace(/\?/g, () => {
+    paramIndex++;
+    const paramName = `param${paramIndex}`;
+    request.input(paramName, params[paramIndex - 1]);
+    return `@${paramName}`;
   });
   
   const result = await request.query(mssqlQuery);
@@ -35,10 +37,12 @@ async function get(query, params = []) {
   
   // Convert ? placeholders to @param1, @param2, etc.
   let mssqlQuery = query;
-  params.forEach((param, index) => {
-    const paramName = `param${index + 1}`;
-    mssqlQuery = mssqlQuery.replace('?', `@${paramName}`);
-    request.input(paramName, param);
+  let paramIndex = 0;
+  mssqlQuery = mssqlQuery.replace(/\?/g, () => {
+    paramIndex++;
+    const paramName = `param${paramIndex}`;
+    request.input(paramName, params[paramIndex - 1]);
+    return `@${paramName}`;
   });
   
   const result = await request.query(mssqlQuery);
@@ -56,10 +60,12 @@ async function run(query, params = []) {
   
   // Convert ? placeholders to @param1, @param2, etc.
   let mssqlQuery = query;
-  params.forEach((param, index) => {
-    const paramName = `param${index + 1}`;
-    mssqlQuery = mssqlQuery.replace('?', `@${paramName}`);
-    request.input(paramName, param);
+  let paramIndex = 0;
+  mssqlQuery = mssqlQuery.replace(/\?/g, () => {
+    paramIndex++;
+    const paramName = `param${paramIndex}`;
+    request.input(paramName, params[paramIndex - 1]);
+    return `@${paramName}`;
   });
   
   // For INSERT queries, modify to return SCOPE_IDENTITY()
