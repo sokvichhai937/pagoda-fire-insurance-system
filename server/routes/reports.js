@@ -4,7 +4,10 @@
 const express = require('express');
 const router = express.Router();
 const { query, validationResult } = require('express-validator');
-const db = require('../database/db');
+const { pool } = require('../config/database');
+const Pagoda = require('../models/Pagoda');
+const Insurance = require('../models/Insurance');
+const Payment = require('../models/Payment');
 const { authenticate } = require('../middleware/auth');
 
 // Helper function to handle validation errors
@@ -36,19 +39,21 @@ router.get('/monthly',
 
       // Get payments for the month
       // យកការទូទាត់សម្រាប់ខែនេះ
-      const payments = await db.all(`
-        SELECT 
-          pm.*,
-          ip.policy_number as policyNumber,
-          p.name as pagodaName,
-          p.province
-        FROM payments pm
-        JOIN insurance_policies ip ON pm.policy_id = ip.id
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE FORMAT(pm.payment_date, 'yyyy-MM') = ?
-        AND pm.status = 'completed'
-        ORDER BY pm.payment_date
-      `, [month]);
+      const result = await pool.request()
+        .input('month', month)
+        .query(`
+          SELECT 
+            pm.*,
+            ip.policy_number as policyNumber,
+            p.name_en as pagodaName,
+            p.province
+          FROM payments pm
+          JOIN insurance_policies ip ON pm.policy_id = ip.id
+          JOIN pagodas p ON ip.pagoda_id = p.id
+          WHERE FORMAT(pm.payment_date, 'yyyy-MM') = @month
+          ORDER BY pm.payment_date
+        `);
+      const payments = result.recordset;
 
       // Calculate totals by payment method
       // គណនាសរុបតាមវិធីសាស្ត្រទូទាត់
@@ -69,20 +74,23 @@ router.get('/monthly',
 
       // Get new policies for the month
       // យកគោលនយោបាយថ្មីសម្រាប់ខែនេះ
-      const newPolicies = await db.all(`
-        SELECT 
-          ip.*,
-          p.name as pagodaName,
-          p.province
-        FROM insurance_policies ip
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE FORMAT(ip.created_at, 'yyyy-MM') = ?
-        ORDER BY ip.created_at
-      `, [month]);
+      const newPoliciesResult = await pool.request()
+        .input('month', month)
+        .query(`
+          SELECT 
+            ip.*,
+            p.name_en as pagodaName,
+            p.province
+          FROM insurance_policies ip
+          JOIN pagodas p ON ip.pagoda_id = p.id
+          WHERE FORMAT(ip.created_at, 'yyyy-MM') = @month
+          ORDER BY ip.created_at
+        `);
+      const newPolicies = newPoliciesResult.recordset;
 
       // Get policies by province
       // យកគោលនយោបាយតាមខេត្ត
-      const policiesByProvince = await db.all(`
+      const provinceResult = await pool.request().query(`
         SELECT 
           p.province,
           COUNT(DISTINCT ip.id) as policyCount,
@@ -93,6 +101,7 @@ router.get('/monthly',
         GROUP BY p.province
         ORDER BY COUNT(DISTINCT ip.id) DESC
       `);
+      const policiesByProvince = provinceResult.recordset;
 
       res.json({
         success: true,
@@ -135,69 +144,84 @@ router.get('/yearly',
 
       // Get monthly breakdown
       // យករបាយការណ៍រាយខែ
-      const monthlyData = await db.all(`
-        SELECT 
-          FORMAT(pm.payment_date, 'MM') as month,
-          COUNT(*) as paymentCount,
-          SUM(pm.amount) as totalAmount
-        FROM payments pm
-        WHERE YEAR(pm.payment_date) = ?
-        AND pm.status = 'completed'
-        GROUP BY FORMAT(pm.payment_date, 'MM')
-        ORDER BY FORMAT(pm.payment_date, 'MM')
-      `, [year]);
+      const monthlyResult = await pool.request()
+        .input('year', year)
+        .query(`
+          SELECT 
+            FORMAT(pm.payment_date, 'MM') as month,
+            COUNT(*) as paymentCount,
+            SUM(pm.amount) as totalAmount
+          FROM payments pm
+          WHERE YEAR(pm.payment_date) = @year
+          GROUP BY FORMAT(pm.payment_date, 'MM')
+          ORDER BY FORMAT(pm.payment_date, 'MM')
+        `);
+      const monthlyData = monthlyResult.recordset;
 
       // Get total revenue
-      const revenueResult = await db.get(`
-        SELECT SUM(amount) as totalRevenue
-        FROM payments
-        WHERE YEAR(payment_date) = ?
-        AND status = 'completed'
-      `, [year]);
+      const revenueData = await pool.request()
+        .input('year', year)
+        .query(`
+          SELECT SUM(amount) as totalRevenue
+          FROM payments
+          WHERE YEAR(payment_date) = @year
+        `);
+      const revenueResult = revenueData.recordset[0];
 
       // Get new policies count
-      const policiesResult = await db.get(`
-        SELECT COUNT(*) as count
-        FROM insurance_policies
-        WHERE YEAR(created_at) = ?
-      `, [year]);
+      const policiesData = await pool.request()
+        .input('year', year)
+        .query(`
+          SELECT COUNT(*) as count
+          FROM insurance_policies
+          WHERE YEAR(created_at) = @year
+        `);
+      const policiesResult = policiesData.recordset[0];
 
       // Get active policies at year end
-      const activePoliciesResult = await db.get(`
-        SELECT COUNT(*) as count
-        FROM insurance_policies
-        WHERE status = 'active'
-        AND YEAR(start_date) <= ?
-        AND YEAR(end_date) >= ?
-      `, [year, year]);
+      const activePoliciesData = await pool.request()
+        .input('year', year)
+        .query(`
+          SELECT COUNT(*) as count
+          FROM insurance_policies
+          WHERE status = 'active'
+          AND YEAR(coverage_start) <= @year
+          AND YEAR(coverage_end) >= @year
+        `);
+      const activePoliciesResult = activePoliciesData.recordset[0];
 
       // Get policies by type
-      const policiesByType = await db.all(`
-        SELECT 
-          p.type,
-          COUNT(ip.id) as count,
-          SUM(ip.premium_amount) as totalPremium
-        FROM insurance_policies ip
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE YEAR(ip.created_at) = ?
-        GROUP BY p.type
-      `, [year]);
+      const typeResult = await pool.request()
+        .input('year', year)
+        .query(`
+          SELECT 
+            p.type,
+            COUNT(ip.id) as count,
+            SUM(ip.premium_amount) as totalPremium
+          FROM insurance_policies ip
+          JOIN pagodas p ON ip.pagoda_id = p.id
+          WHERE YEAR(ip.created_at) = @year
+          GROUP BY p.type
+        `);
+      const policiesByType = typeResult.recordset;
 
       // Get top provinces by revenue
-      const topProvinces = await db.all(`
-        SELECT 
-          p.province,
-          COUNT(DISTINCT ip.id) as policyCount,
-          SUM(pm.amount) as totalRevenue
-        FROM payments pm
-        JOIN insurance_policies ip ON pm.policy_id = ip.id
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE YEAR(pm.payment_date) = ?
-        AND pm.status = 'completed'
-        GROUP BY p.province
-        ORDER BY SUM(pm.amount) DESC
-        OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY
-      `, [year]);
+      const provincesResult = await pool.request()
+        .input('year', year)
+        .query(`
+          SELECT 
+            p.province,
+            COUNT(DISTINCT ip.id) as policyCount,
+            SUM(pm.amount) as totalRevenue
+          FROM payments pm
+          JOIN insurance_policies ip ON pm.policy_id = ip.id
+          JOIN pagodas p ON ip.pagoda_id = p.id
+          WHERE YEAR(pm.payment_date) = @year
+          GROUP BY p.province
+          ORDER BY SUM(pm.amount) DESC
+          OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY
+        `);
+      const topProvinces = provincesResult.recordset;
 
       res.json({
         success: true,
@@ -234,25 +258,25 @@ router.get('/pagoda-status',
     try {
       // Get all pagodas with their policy and payment status
       // យកវត្តអារាមទាំងអស់ជាមួយស្ថានភាពគោលនយោបាយ និងការទូទាត់
-      const pagodaStatus = await db.all(`
+      const statusResult = await pool.request().query(`
         SELECT 
           p.id,
-          p.name,
-          p.name_khmer as nameKhmer,
+          p.name_en as name,
+          p.name_km as nameKhmer,
           p.province,
-          p.district,
           ip.id as policyId,
           ip.policy_number as policyNumber,
           ip.status as policyStatus,
-          ip.start_date as startDate,
-          ip.end_date as endDate,
+          ip.coverage_start as startDate,
+          ip.coverage_end as endDate,
           ip.premium_amount as premiumAmount,
-          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id AND status = 'completed') as totalPaid,
-          (SELECT MAX(payment_date) FROM payments WHERE policy_id = ip.id AND status = 'completed') as lastPaymentDate
+          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as totalPaid,
+          (SELECT MAX(payment_date) FROM payments WHERE policy_id = ip.id) as lastPaymentDate
         FROM pagodas p
         LEFT JOIN insurance_policies ip ON p.id = ip.pagoda_id AND ip.status = 'active'
-        ORDER BY p.province, p.name
+        ORDER BY p.province, p.name_en
       `);
+      const pagodaStatus = statusResult.recordset;
 
       // Categorize pagodas
       // ចាត់ថ្នាក់វត្តអារាម
@@ -322,71 +346,78 @@ router.get('/stats',
       const monthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
 
       // Total pagodas
-      const totalPagodas = await db.get('SELECT COUNT(*) as count FROM pagodas');
+      const totalPagodasData = await pool.request().query('SELECT COUNT(*) as count FROM pagodas');
+      const totalPagodas = totalPagodasData.recordset[0];
 
       // Active policies
-      const activePolicies = await db.get(`
+      const activePoliciesData = await pool.request().query(`
         SELECT COUNT(*) as count 
         FROM insurance_policies 
         WHERE status = 'active'
       `);
+      const activePolicies = activePoliciesData.recordset[0];
 
       // Payments this month
-      const paymentsThisMonth = await db.get(`
-        SELECT 
-          COUNT(*) as count,
-          SUM(amount) as total
-        FROM payments
-        WHERE FORMAT(payment_date, 'yyyy-MM') = ?
-        AND status = 'completed'
-      `, [monthStr]);
+      const paymentsMonthData = await pool.request()
+        .input('monthStr', monthStr)
+        .query(`
+          SELECT 
+            COUNT(*) as count,
+            SUM(amount) as total
+          FROM payments
+          WHERE FORMAT(payment_date, 'yyyy-MM') = @monthStr
+        `);
+      const paymentsThisMonth = paymentsMonthData.recordset[0];
 
       // Total revenue (all time)
-      const totalRevenue = await db.get(`
+      const totalRevenueData = await pool.request().query(`
         SELECT SUM(amount) as total
         FROM payments
-        WHERE status = 'completed'
       `);
+      const totalRevenue = totalRevenueData.recordset[0];
 
       // Overdue payments (policies with unpaid premiums)
-      const overduePayments = await db.get(`
+      const overdueData = await pool.request().query(`
         SELECT COUNT(*) as count
         FROM insurance_policies ip
         WHERE ip.status = 'active'
         AND (
           SELECT COALESCE(SUM(amount), 0)
           FROM payments
-          WHERE policy_id = ip.id AND status = 'completed'
+          WHERE policy_id = ip.id
         ) < ip.premium_amount
       `);
+      const overduePayments = overdueData.recordset[0];
 
       // Recent policies (last 5)
-      const recentPolicies = await db.all(`
+      const recentPoliciesData = await pool.request().query(`
         SELECT 
           ip.*,
-          p.name as pagodaName,
-          p.name_khmer as pagodaNameKhmer
+          p.name_en as pagodaName,
+          p.name_km as pagodaNameKhmer
         FROM insurance_policies ip
         JOIN pagodas p ON ip.pagoda_id = p.id
         ORDER BY ip.created_at DESC
         OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY
       `);
+      const recentPolicies = recentPoliciesData.recordset;
 
       // Recent payments (last 5)
-      const recentPayments = await db.all(`
+      const recentPaymentsData = await pool.request().query(`
         SELECT 
           pm.*,
           ip.policy_number as policyNumber,
-          p.name as pagodaName
+          p.name_en as pagodaName
         FROM payments pm
         JOIN insurance_policies ip ON pm.policy_id = ip.id
         JOIN pagodas p ON ip.pagoda_id = p.id
         ORDER BY pm.payment_date DESC
         OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY
       `);
+      const recentPayments = recentPaymentsData.recordset;
 
       // Policies by province
-      const policiesByProvince = await db.all(`
+      const provinceData = await pool.request().query(`
         SELECT 
           p.province,
           COUNT(ip.id) as count
@@ -396,6 +427,7 @@ router.get('/stats',
         ORDER BY COUNT(ip.id) DESC
         OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY
       `);
+      const policiesByProvince = provinceData.recordset;
 
       res.json({
         success: true,
