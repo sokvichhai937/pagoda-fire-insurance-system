@@ -80,8 +80,8 @@ router.get('/',
         FROM pagodas p
         ${whereClause}
         ORDER BY p.createdAt DESC
-        LIMIT ? OFFSET ?
-      `, [...params, limit, offset]);
+        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+      `, [...params, offset, limit]);
 
       res.json({
         success: true,
