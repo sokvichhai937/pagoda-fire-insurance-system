@@ -4,7 +4,8 @@
 const express = require('express');
 const router = express.Router();
 const { body, param, query, validationResult } = require('express-validator');
-const db = require('../database/db');
+const Insurance = require('../models/Insurance');
+const Pagoda = require('../models/Pagoda');
 const { authenticate, isAdminOrStaff } = require('../middleware/auth');
 const insuranceCalculator = require('../utils/insuranceCalculator');
 
@@ -84,48 +85,40 @@ router.get('/policies',
       const offset = (page - 1) * limit;
       const { status, province, search } = req.query;
 
-      // Build WHERE clause
-      const conditions = [];
-      const params = [];
-
-      if (status) {
-        conditions.push('ip.status = ?');
-        params.push(status);
-      }
-      if (province) {
-        conditions.push('p.province = ?');
-        params.push(province);
-      }
-      if (search) {
-        conditions.push('(ip.policy_number LIKE ? OR p.name LIKE ? OR p.name_khmer LIKE ?)');
-        const searchPattern = `%${search}%`;
-        params.push(searchPattern, searchPattern, searchPattern);
-      }
-
-      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      // Build filters object
+      const filters = {};
+      if (status) filters.status = status;
+      if (province) filters.province = province;
+      if (search) filters.search = search;
 
       // Get total count
-      const countResult = await db.get(`
+      const { pool, sql } = require('../config/database');
+      let countQuery = `
         SELECT COUNT(*) as total 
-        FROM insurance_policies ip
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        ${whereClause}
-      `, params);
+        FROM insurance_policies i
+        JOIN pagodas p ON i.pagoda_id = p.id
+        WHERE 1=1
+      `;
+      const countRequest = pool.request();
+      
+      if (status) {
+        countQuery += ' AND i.status = @status';
+        countRequest.input('status', sql.NVarChar, status);
+      }
+      if (province) {
+        countQuery += ' AND p.province = @province';
+        countRequest.input('province', sql.NVarChar, province);
+      }
+      if (search) {
+        countQuery += ' AND (i.policy_number LIKE @search OR p.name_km LIKE @search OR p.name_en LIKE @search)';
+        countRequest.input('search', sql.NVarChar, `%${search}%`);
+      }
+
+      const countResult = await countRequest.query(countQuery);
+      const total = countResult.recordset[0].total;
 
       // Get policies
-      const policies = await db.all(`
-        SELECT 
-          ip.*,
-          p.name as pagoda_name,
-          p.name_khmer as pagoda_name_khmer,
-          p.province,
-          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as total_paid
-        FROM insurance_policies ip
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        ${whereClause}
-        ORDER BY ip.created_at DESC
-        OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
-      `, [...params, offset, limit]);
+      const policies = await Insurance.findAll(filters, { limit, offset });
 
       res.json({
         success: true,
@@ -133,10 +126,10 @@ router.get('/policies',
         data: {
           policies,
           pagination: {
-            total: countResult.total,
+            total,
             page,
             limit,
-            totalPages: Math.ceil(countResult.total / limit)
+            totalPages: Math.ceil(total / limit)
           }
         }
       });
@@ -161,20 +154,7 @@ router.get('/policies/:id',
     try {
       const { id } = req.params;
 
-      const policy = await db.get(`
-        SELECT 
-          ip.*,
-          p.name as pagoda_name,
-          p.name_khmer as pagoda_name_khmer,
-          p.province,
-          p.district,
-          p.address,
-          (SELECT SUM(amount) FROM payments WHERE policy_id = ip.id) as total_paid,
-          (SELECT COUNT(*) FROM payments WHERE policy_id = ip.id) as payment_count
-        FROM insurance_policies ip
-        JOIN pagodas p ON ip.pagoda_id = p.id
-        WHERE ip.id = ?
-      `, [id]);
+      const policy = await Insurance.findById(id);
 
       if (!policy) {
         return res.status(404).json({
@@ -183,25 +163,24 @@ router.get('/policies/:id',
         });
       }
 
-      // Get buildings covered by this policy
-      const buildings = await db.all(
-        'SELECT * FROM buildings WHERE pagoda_id = ?',
-        [policy.pagoda_id]
-      );
-
-      // Get payment history
-      const payments = await db.all(
-        'SELECT * FROM payments WHERE policy_id = ? ORDER BY payment_date DESC',
-        [id]
-      );
+      // Get buildings and payments for this policy
+      const { pool, sql } = require('../config/database');
+      
+      const buildingsResult = await pool.request()
+        .input('pagoda_id', sql.Int, policy.pagoda_id)
+        .query('SELECT * FROM buildings WHERE pagoda_id = @pagoda_id');
+      
+      const paymentsResult = await pool.request()
+        .input('policy_id', sql.Int, id)
+        .query('SELECT * FROM payments WHERE policy_id = @policy_id ORDER BY payment_date DESC');
 
       res.json({
         success: true,
         message: 'Policy retrieved successfully',
         data: {
           ...policy,
-          buildings,
-          payments
+          buildings: buildingsResult.recordset,
+          payments: paymentsResult.recordset
         }
       });
     } catch (error) {
@@ -224,20 +203,20 @@ router.post('/policies',
     body('pagodaId').isInt().withMessage('Valid pagoda ID is required'),
     body('startDate').isISO8601().withMessage('Valid start date is required'),
     body('endDate').isISO8601().withMessage('Valid end date is required'),
-    body('coverageAmount').isFloat({ min: 0 }).withMessage('Valid coverage amount is required'),
     body('premiumAmount').isFloat({ min: 0 }).withMessage('Valid premium amount is required'),
-    body('paymentFrequency').isIn(['annual', 'semi-annual', 'quarterly', 'monthly'])
+    body('calculationDetails').optional().isString(),
+    body('notes').optional().isString()
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const {
-        pagodaId, startDate, endDate, coverageAmount, premiumAmount,
-        paymentFrequency, notes
+        pagodaId, startDate, endDate, premiumAmount,
+        calculationDetails, notes
       } = req.body;
 
       // Verify pagoda exists
-      const pagoda = await db.get('SELECT id FROM pagodas WHERE id = ?', [pagodaId]);
+      const pagoda = await Pagoda.findById(pagodaId);
       if (!pagoda) {
         return res.status(404).json({
           success: false,
@@ -247,17 +226,22 @@ router.post('/policies',
 
       // Check for overlapping active policies
       // ពិនិត្យមើលថាតើមានគោលនយោបាយសកម្មដែលមានរយៈពេលជាប់គ្នា
-      const existingPolicy = await db.get(`
-        SELECT id FROM insurance_policies 
-        WHERE pagoda_id = ? 
-        AND status = 'active'
-        AND (
-          (start_date <= ? AND end_date >= ?)
-          OR (start_date <= ? AND end_date >= ?)
-        )
-      `, [pagodaId, startDate, startDate, endDate, endDate]);
+      const { pool, sql } = require('../config/database');
+      const existingPolicyResult = await pool.request()
+        .input('pagoda_id', sql.Int, pagodaId)
+        .input('start_date', sql.Date, startDate)
+        .input('end_date', sql.Date, endDate)
+        .query(`
+          SELECT id FROM insurance_policies 
+          WHERE pagoda_id = @pagoda_id 
+          AND status = 'active'
+          AND (
+            (coverage_start <= @start_date AND coverage_end >= @start_date)
+            OR (coverage_start <= @end_date AND coverage_end >= @end_date)
+          )
+        `);
 
-      if (existingPolicy) {
+      if (existingPolicyResult.recordset.length > 0) {
         return res.status(409).json({
           success: false,
           message: 'An active policy already exists for this period'
@@ -266,28 +250,21 @@ router.post('/policies',
 
       // Generate policy number
       // បង្កើតលេខគោលនយោបាយ
-      const year = new Date(startDate).getFullYear();
-      const count = await db.get(
-        'SELECT COUNT(*) as count FROM insurance_policies WHERE YEAR(start_date) = ?',
-        [year]
-      );
-      const policyNumber = `POL-${year}-${String(count.count + 1).padStart(4, '0')}`;
+      const policyNumber = await Insurance.generatePolicyNumber();
 
-      const result = await db.run(`
-        INSERT INTO insurance_policies (
-          policy_number, pagoda_id, start_date, end_date,
-          coverage_amount, premium_amount, payment_frequency,
-          status, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
-      `, [
-        policyNumber, pagodaId, startDate, endDate,
-        coverageAmount, premiumAmount, paymentFrequency, notes
-      ]);
+      // Create policy with correct field mapping
+      const policyId = await Insurance.create({
+        pagoda_id: pagodaId,
+        policy_number: policyNumber,
+        premium_amount: premiumAmount,
+        coverage_start: startDate,
+        coverage_end: endDate,
+        calculation_details: calculationDetails ? JSON.stringify(calculationDetails) : null,
+        notes: notes || null,
+        created_by: req.user.id
+      });
 
-      const policy = await db.get(
-        'SELECT * FROM insurance_policies WHERE id = ?',
-        [result.lastID]
-      );
+      const policy = await Insurance.findById(policyId);
 
       res.status(201).json({
         success: true,
@@ -314,17 +291,17 @@ router.put('/policies/:id',
     param('id').isInt().withMessage('Policy ID must be an integer'),
     body('startDate').optional().isISO8601(),
     body('endDate').optional().isISO8601(),
-    body('coverageAmount').optional().isFloat({ min: 0 }),
     body('premiumAmount').optional().isFloat({ min: 0 }),
-    body('paymentFrequency').optional().isIn(['annual', 'semi-annual', 'quarterly', 'monthly']),
-    body('status').optional().isIn(['active', 'expired', 'cancelled'])
+    body('calculationDetails').optional(),
+    body('status').optional().isIn(['active', 'expired', 'cancelled']),
+    body('notes').optional().isString()
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const { id } = req.params;
 
-      const policy = await db.get('SELECT * FROM insurance_policies WHERE id = ?', [id]);
+      const policy = await Insurance.findById(id);
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -332,44 +309,44 @@ router.put('/policies/:id',
         });
       }
 
-      // Build update query dynamically
-      const updates = [];
-      const values = [];
-      const fieldMapping = {
-        'startDate': 'start_date',
-        'endDate': 'end_date',
-        'coverageAmount': 'coverage_amount',
-        'premiumAmount': 'premium_amount',
-        'paymentFrequency': 'payment_frequency',
-        'status': 'status',
-        'notes': 'notes'
-      };
-
-      for (const [camelField, snakeField] of Object.entries(fieldMapping)) {
-        if (req.body[camelField] !== undefined) {
-          updates.push(`${snakeField} = ?`);
-          values.push(req.body[camelField]);
-        }
+      // Build update data with camelCase to snake_case mapping
+      const updateData = {};
+      if (req.body.premiumAmount !== undefined) {
+        updateData.premium_amount = req.body.premiumAmount;
+      }
+      if (req.body.startDate !== undefined) {
+        updateData.coverage_start = req.body.startDate;
+      }
+      if (req.body.endDate !== undefined) {
+        updateData.coverage_end = req.body.endDate;
+      }
+      if (req.body.calculationDetails !== undefined) {
+        updateData.calculation_details = typeof req.body.calculationDetails === 'string' 
+          ? req.body.calculationDetails 
+          : JSON.stringify(req.body.calculationDetails);
+      }
+      if (req.body.notes !== undefined) {
+        updateData.notes = req.body.notes;
       }
 
-      if (updates.length === 0) {
+      if (Object.keys(updateData).length === 0 && req.body.status === undefined) {
         return res.status(400).json({
           success: false,
           message: 'No fields to update'
         });
       }
 
-      values.push(id);
+      // Update policy fields if any
+      if (Object.keys(updateData).length > 0) {
+        await Insurance.update(id, updateData);
+      }
 
-      await db.run(
-        `UPDATE insurance_policies SET ${updates.join(', ')}, updated_at = GETDATE() WHERE id = ?`,
-        values
-      );
+      // Update status separately if provided
+      if (req.body.status !== undefined) {
+        await Insurance.updateStatus(id, req.body.status);
+      }
 
-      const updatedPolicy = await db.get(
-        'SELECT * FROM insurance_policies WHERE id = ?',
-        [id]
-      );
+      const updatedPolicy = await Insurance.findById(id);
 
       res.json({
         success: true,
@@ -406,7 +383,7 @@ router.delete('/policies/:id',
     try {
       const { id } = req.params;
 
-      const policy = await db.get('SELECT * FROM insurance_policies WHERE id = ?', [id]);
+      const policy = await Insurance.findById(id);
       if (!policy) {
         return res.status(404).json({
           success: false,
@@ -416,10 +393,7 @@ router.delete('/policies/:id',
 
       // Mark as cancelled instead of deleting
       // សម្គាល់ថាបានបោះបង់ជំនួសឱ្យការលុប
-      await db.run(
-        'UPDATE insurance_policies SET status = ?, updated_at = GETDATE() WHERE id = ?',
-        ['cancelled', id]
-      );
+      await Insurance.updateStatus(id, 'cancelled');
 
       res.json({
         success: true,
