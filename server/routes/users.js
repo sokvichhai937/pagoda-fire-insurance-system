@@ -27,9 +27,9 @@ const handleValidationErrors = (req, res, next) => {
 router.get('/', authenticate, isAdmin, async (req, res) => {
   try {
     const users = await db.all(`
-      SELECT id, username, fullName, email, role, createdAt, lastLogin
+      SELECT id, username, full_name, email, role, is_active, created_at
       FROM users
-      ORDER BY createdAt DESC
+      ORDER BY created_at DESC
     `);
 
     res.json({
@@ -67,7 +67,7 @@ router.get('/:id',
       }
 
       const user = await db.get(`
-        SELECT id, username, fullName, email, role, createdAt, lastLogin
+        SELECT id, username, full_name, email, role, is_active, created_at
         FROM users
         WHERE id = ?
       `, [id]);
@@ -131,7 +131,7 @@ router.post('/',
 
       // Insert new user
       const result = await db.run(`
-        INSERT INTO users (username, password, fullName, email, role)
+        INSERT INTO users (username, password, full_name, email, role)
         VALUES (?, ?, ?, ?, ?)
       `, [username, hashedPassword, fullName, email, role]);
 
@@ -141,7 +141,7 @@ router.post('/',
         data: {
           id: result.lastID,
           username,
-          fullName,
+          full_name: fullName,
           email,
           role
         }
@@ -208,7 +208,7 @@ router.put('/:id',
         values.push(username);
       }
       if (fullName) {
-        updates.push('fullName = ?');
+        updates.push('full_name = ?');
         values.push(fullName);
       }
       if (email) {
@@ -235,7 +235,7 @@ router.put('/:id',
       );
 
       const updatedUser = await db.get(`
-        SELECT id, username, fullName, email, role, createdAt, lastLogin
+        SELECT id, username, full_name, email, role, is_active, created_at
         FROM users WHERE id = ?
       `, [id]);
 
